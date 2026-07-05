@@ -1,0 +1,49 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/example/sentinel
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  enabled: false
+  type: ClusterIP
+  port: 80
+
+existingSecret: ""
+
+probes:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+env:
+  SENTINEL_ENV: production
+  SENTINEL_LOG_LEVEL: INFO
+  SENTINEL_OPENAI_MODEL: gpt-4.1-mini
+  SENTINEL_SLACK_CONTROL_CHANNELS: C_COMMAND_CHANNEL_ID
+  SENTINEL_SLACK_ALERT_CHANNEL_ID: C_ALERT_CHANNEL_ID
+  SENTINEL_SLACK_ALLOW_DMS: false
+  SENTINEL_ADMIN_SLACK_USER_IDS: '["U_ADMIN_SLACK_ID"]'
+  SENTINEL_OPERATOR_SLACK_USER_IDS: '["U_ADMIN_SLACK_ID"]'
+  SENTINEL_GITOPS_REPO: owner/repo
+  SENTINEL_GITHUB_DEFAULT_BRANCH: main
+  SENTINEL_GITHUB_PR_DRY_RUN: "true"
+  SENTINEL_GITOPS_DEPLOY_VALUES_PATH_TEMPLATE: apps/{service}/overlays/{environment}/values.yaml
+  SENTINEL_ARGOCD_BASE_URL: ""
+  SENTINEL_GRAFANA_BASE_URL: ""
+
+secretEnv:
+  SENTINEL_OPENAI_API_KEY: ""
+  SENTINEL_SLACK_BOT_TOKEN: ""
+  SENTINEL_SLACK_APP_TOKEN: ""
+  SENTINEL_SLACK_SIGNING_SECRET: ""
+  SENTINEL_GITHUB_TOKEN: ""
+  SENTINEL_ARGOCD_TOKEN: ""
+  SENTINEL_GRAFANA_TOKEN: ""

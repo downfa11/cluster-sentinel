@@ -1,0 +1,18 @@
+services:
+  sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cluster-sentinel:local
+    container_name: sentinel
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SENTINEL_ENV: production
+      SENTINEL_LOG_LEVEL: INFO
+      SENTINEL_SLACK_CONTROL_CHANNELS: C_COMMAND_CHANNEL_ID
+      SENTINEL_SLACK_ALERT_CHANNEL_ID: C_ALERT_CHANNEL_ID
+      SENTINEL_SLACK_ALLOW_DMS: false
+      SENTINEL_ADMIN_SLACK_USER_IDS: '["U_ADMIN_SLACK_ID"]'
+      SENTINEL_OPERATOR_SLACK_USER_IDS: '["U_ADMIN_SLACK_ID"]'

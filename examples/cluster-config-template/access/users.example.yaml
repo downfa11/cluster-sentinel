@@ -1,0 +1,12 @@
+﻿users:
+  - id: user-example-001
+    name: Example Developer
+    email: developer@example.com
+    slack_user_id: U00000000
+    github_username: example-dev
+    roles:
+      - dev
+    groups:
+      - api-team
+    status: active
+    expires_at: null

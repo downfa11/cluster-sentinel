@@ -1,0 +1,12 @@
+﻿groups:
+  api-team:
+    owners:
+      - admin@example.com
+    services:
+      - api
+    environments:
+      - dev
+      - staging
+    github_team: api-team
+    grafana_team: api-team
+    tailscale_group: group:api-team

@@ -1,0 +1,41 @@
+name: access-sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "access/**"
+  workflow_dispatch:
+
+jobs:
+  sync-access:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Sentinel
+        run: python -m pip install -e .
+      - name: Sync external access targets
+        run: |
+          sentinel-access-sync \
+            --access-dir access \
+            --sync-removals \
+            --github-org "${{ vars.ACCESS_GITHUB_ORG }}" \
+            --github-token "${{ secrets.ACCESS_GITHUB_TOKEN }}" \
+            --grafana-url "${{ vars.ACCESS_GRAFANA_URL }}" \
+            --grafana-token "${{ secrets.ACCESS_GRAFANA_TOKEN }}" \
+            --tailscale-tailnet "${{ vars.ACCESS_TAILSCALE_TAILNET }}" \
+            --tailscale-token "${{ secrets.ACCESS_TAILSCALE_TOKEN }}" \
+            --tailscale-policy-in tailscale/policy.json \
+            --tailscale-policy-out tailscale/generated-policy.json \
+            --tailscale-groups-out tailscale/generated-groups.json \
+            --argocd-policy-out argocd/generated-policy.csv
+      - name: Commit generated policy files
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "sentinel: sync generated access policy"
+          file_pattern: "tailscale/generated-groups.json tailscale/generated-policy.json argocd/generated-policy.csv"
