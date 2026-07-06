@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from sentinel.config import Settings
 from sentinel.models import Principal, Role
@@ -38,7 +39,7 @@ class IdentityResolver:
             groups=set(),
         )
 
-    def _load_users(self, path: str | None) -> dict[str, dict[str, object]]:
+    def _load_users(self, path: str | None) -> dict[str, dict[str, Any]]:
         if not path:
             return {}
         text = Path(path).read_text(encoding="utf-8")
@@ -50,9 +51,13 @@ class IdentityResolver:
             except ImportError as exc:  # pragma: no cover - optional dependency boundary
                 raise RuntimeError("PyYAML is required for YAML access files") from exc
             raw = yaml.safe_load(text) or {}
+        if not isinstance(raw, dict):
+            return {}
         users = raw.get("users", [])
-        return {
-            str(user["slack_user_id"]): user
-            for user in users
-            if isinstance(user, dict) and user.get("slack_user_id")
-        }
+        if not isinstance(users, list):
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for user in users:
+            if isinstance(user, dict) and user.get("slack_user_id"):
+                result[str(user["slack_user_id"])] = dict(user)
+        return result

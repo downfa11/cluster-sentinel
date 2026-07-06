@@ -23,7 +23,7 @@ class SentinelSlackBot:
             raise RuntimeError("SENTINEL_SLACK_APP_TOKEN is required for Socket Mode")
         from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-        SocketModeHandler(self.app, self.settings.slack_app_token).start()
+        SocketModeHandler(self.app, self.settings.slack_app_token).start()  # type: ignore[no-untyped-call]
 
     def _register_handlers(self) -> None:
         @self.app.event("app_mention")

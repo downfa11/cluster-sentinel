@@ -1,7 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from sentinel.models import McpToolCall, OperationRequest, ToolResult
 
@@ -13,6 +13,13 @@ class McpToolDefinition:
     input_schema: dict[str, Any]
 
 
+class ToolRegistryProtocol(Protocol):
+    @property
+    def schemas(self) -> list[dict[str, Any]]: ...
+
+    def execute(self, request: OperationRequest, tool_name: str, args: dict[str, Any]) -> ToolResult: ...
+
+
 class SentinelMcpGateway:
     """In-process MCP-style gateway used by the LLM agent.
 
@@ -21,7 +28,7 @@ class SentinelMcpGateway:
     replace this with a real remote MCP client without changing the runtime flow.
     """
 
-    def __init__(self, registry: Any) -> None:
+    def __init__(self, registry: ToolRegistryProtocol) -> None:
         self.registry = registry
 
     def list_tools(self) -> list[McpToolDefinition]:
@@ -37,7 +44,7 @@ class SentinelMcpGateway:
         return definitions
 
     def openai_tool_schemas(self) -> list[dict[str, Any]]:
-        return self.registry.schemas
+        return [dict(schema) for schema in self.registry.schemas]
 
     def call_tool(self, request: OperationRequest, call: McpToolCall) -> ToolResult:
         return self.registry.execute(request, call.name, call.arguments)

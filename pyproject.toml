@@ -23,6 +23,7 @@ dev = [
   "pytest>=8.0.0",
   "ruff>=0.5.0",
   "mypy>=1.10.0",
+  "types-PyYAML>=6.0.0",
 ]
 
 [tool.ruff]
@@ -32,3 +33,6 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = true
