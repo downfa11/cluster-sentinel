@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 from sentinel.config import Settings
 from sentinel.models import OperationRequest, ToolResult
@@ -283,7 +283,7 @@ class GitOpsPullRequestFactory:
             import yaml
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("PyYAML is required to patch GitOps values files") from exc
-        return cast(str, yaml.safe_dump(values, sort_keys=False, allow_unicode=True))
+        return str(yaml.safe_dump(values, sort_keys=False, allow_unicode=True))
 
     def _split_image(self, image_tag: str) -> tuple[str | None, str]:
         if ":" not in image_tag:
