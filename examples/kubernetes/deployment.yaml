@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: sentinel
-          image: ghcr.io/example/sentinel:latest
+          image: ghcr.io/downfa11/cluster-sentinel:latest
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

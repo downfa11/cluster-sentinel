@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/example/sentinel
+  repository: ghcr.io/downfa11/cluster-sentinel
   tag: latest
   pullPolicy: IfNotPresent
 
