@@ -46,6 +46,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -56,3 +57,51 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Checkout cluster-config main
+        if: github.ref == 'refs/heads/main'
+        uses: actions/checkout@v4
+        with:
+          repository: downfa11/cluster-config
+          ref: main
+          token: ${{ secrets.CLUSTER_CONFIG_TOKEN }}
+          path: cluster-config
+          fetch-depth: 0
+
+      - name: Update immutable image reference
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          python cluster-config/scripts/update_image_digests.py \
+            --repo-root cluster-config \
+            --image "cluster-sentinel=$IMAGE_DIGEST"
+
+      - name: Commit desired state directly to main
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        working-directory: cluster-config
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git config user.name "home-gitops-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add clusters/home/apps/cluster-sentinel.yaml
+          if git diff --cached --quiet; then
+            echo "cluster-config already references this digest"
+            exit 0
+          fi
+          git commit --signoff -m "deploy: update sentinel image to ${SOURCE_SHA::7}"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              break
+            fi
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "failed to update cluster-config/main after 3 attempts" >&2
+          exit 1
