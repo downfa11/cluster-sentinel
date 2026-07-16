@@ -171,6 +171,7 @@ class GitOpsPullRequestFactory:
             values["image"] = image
         if repository:
             image["repository"] = repository
+        image.pop("digest", None)
         image["tag"] = tag
         values.setdefault("sentinel", {})
         values["sentinel"].update({"lastRequestId": request.request_id, "service": service, "environment": environment})
