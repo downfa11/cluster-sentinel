@@ -1,37 +1,65 @@
 name: Docker Publish
 
 on:
-  push:
+  workflow_run:
+    workflows: ["ci"]
     branches: [main]
+    types: [completed]
+  push:
     tags: ["v*"]
   workflow_dispatch:
-
-concurrency:
-  group: docker-publish-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: docker-publish-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.repository_owner }}/cluster-sentinel
 
 jobs:
   publish:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
+      - name: Check production source is current
+        id: source
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [ "$current_sha" = "$SOURCE_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping stale source commit $SOURCE_SHA; main is $current_sha"
+          fi
+
       - name: Checkout
-        uses: actions/checkout@v4
+        if: github.event_name != 'workflow_run' || steps.source.outputs.current == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        if: github.event_name != 'workflow_run' || steps.source.outputs.current == 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        if: github.event_name != 'workflow_run' || steps.source.outputs.current == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -39,7 +67,8 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        if: github.event_name != 'workflow_run' || steps.source.outputs.current == 'true'
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -47,11 +76,12 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
 
       - name: Build and push image
         id: build
-        uses: docker/build-push-action@v6
+        if: github.event_name != 'workflow_run' || steps.source.outputs.current == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Dockerfile
@@ -63,8 +93,8 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Checkout cluster-config main
-        if: github.ref == 'refs/heads/main'
-        uses: actions/checkout@v4
+        if: github.event_name == 'workflow_run' && steps.source.outputs.current == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: downfa11/cluster-config
           ref: main
@@ -72,54 +102,66 @@ jobs:
           path: cluster-config
           fetch-depth: 0
 
-      - name: Update immutable image reference
-        if: github.ref == 'refs/heads/main'
-        shell: bash
-        env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          python cluster-config/scripts/update_image_digests.py \
-            --repo-root cluster-config \
-            --image "cluster-sentinel=$IMAGE_DIGEST"
+      - name: Set up Kubernetes validation tools
+        if: github.event_name == 'workflow_run' && steps.source.outputs.current == 'true'
+        uses: yokawasa/action-setup-kube-tools@9e25a4277af127b60011c95b6ed2da7e3b3613b1 # v0.11.2
+        with:
+          kustomize: "5.7.0"
+          kubeconform: "0.6.7"
 
-      - name: Commit desired state directly to main
-        if: github.ref == 'refs/heads/main'
+      - name: Update desired state directly on main
+        if: github.event_name == 'workflow_run' && steps.source.outputs.current == 'true'
         shell: bash
         working-directory: cluster-config
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ github.sha }}
-          SOURCE_REPOSITORY: ${{ github.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          is_current_source() {
-            local latest_source_sha
-            latest_source_sha="$(
-              curl --fail --silent --show-error \
-                --header "Accept: application/vnd.github+json" \
-                --header "Authorization: Bearer $GITHUB_TOKEN" \
-                --header "X-GitHub-Api-Version: 2022-11-28" \
-                "https://api.github.com/repos/$SOURCE_REPOSITORY/commits/main" \
-                | python -c 'import json, sys; print(json.load(sys.stdin)["sha"])'
-            )"
-            [ "$latest_source_sha" = "$SOURCE_SHA" ]
-          }
-
-          if ! is_current_source; then
-            echo "skipping stale source commit $SOURCE_SHA; main has advanced"
-            exit 0
-          fi
-
           git config user.name "home-gitops-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add clusters/home/apps/cluster-sentinel.yaml
-          if git diff --cached --quiet; then
-            echo "cluster-config already references this digest"
-            exit 0
+
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid Sentinel image digest: $IMAGE_DIGEST" >&2
+            exit 1
           fi
-          git commit --signoff -m "deploy: update sentinel image to ${SOURCE_SHA::7}"
+
+          source_is_current() {
+            test "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" = "$SOURCE_SHA"
+          }
+
           for attempt in 1 2 3; do
-            if ! is_current_source; then
-              echo "skipping stale source commit $SOURCE_SHA; main has advanced"
+            if ! source_is_current; then
+              echo "Skipping stale source commit $SOURCE_SHA"
+              exit 0
+            fi
+
+            git fetch origin main
+            git reset --hard origin/main
+            manifest="clusters/home/devops-bot/deployment.yaml"
+            image_pattern='^[[:space:]]*image:[[:space:]]*ghcr\.io/downfa11/cluster-sentinel(:[^[:space:]@]+)?(@sha256:[0-9a-f]{64})?[[:space:]]*$'
+            matches="$(grep -Ec "$image_pattern" "$manifest")"
+            if [ "$matches" -ne 1 ]; then
+              echo "expected exactly one Sentinel image reference, found $matches" >&2
+              exit 1
+            fi
+            sed -E -i \
+              "s#^([[:space:]]*image:[[:space:]]*ghcr\.io/downfa11/cluster-sentinel)(:[^[:space:]@]+)?(@sha256:[0-9a-f]{64})?[[:space:]]*\$#\1@${IMAGE_DIGEST}#" \
+              "$manifest"
+            if ! grep -Eq "^[[:space:]]*image:[[:space:]]*ghcr\.io/downfa11/cluster-sentinel@${IMAGE_DIGEST}[[:space:]]*$" "$manifest"; then
+              echo "failed to write Sentinel image digest" >&2
+              exit 1
+            fi
+            bash scripts/validate-k8s-manifests.sh clusters/home/devops-bot
+            git add clusters/home/devops-bot/deployment.yaml
+            if git diff --cached --quiet; then
+              echo "cluster-config already references this digest"
+              exit 0
+            fi
+            git commit --signoff -m "deploy: update sentinel image to ${SOURCE_SHA::7}"
+
+            if ! source_is_current; then
+              echo "Skipping stale source commit $SOURCE_SHA before push"
               exit 0
             fi
             if git push origin HEAD:main; then
@@ -128,8 +170,6 @@ jobs:
             if [ "$attempt" -eq 3 ]; then
               break
             fi
-            git fetch origin main
-            git rebase origin/main
           done
           echo "failed to update cluster-config/main after 3 attempts" >&2
           exit 1
