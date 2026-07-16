@@ -22,27 +22,37 @@ class AgentOrchestrator:
     def __init__(self, settings: Settings, mcp: SentinelMcpGateway) -> None:
         self.settings = settings
         self.mcp = mcp
-        self.client = self._create_client(settings.openai_api_key)
+        self.client, self.model = self._create_client(settings)
 
-    def _create_client(self, api_key: str | None) -> Any:
+    def _create_client(self, settings: Settings) -> tuple[Any, str]:
+        if settings.llm_provider == "gemini":
+            api_key, model = settings.gemini_api_key, settings.gemini_model
+            base_url = settings.gemini_base_url
+        elif settings.llm_provider == "openai":
+            api_key, model, base_url = settings.openai_api_key, settings.openai_model, None
+        else:
+            raise RuntimeError(f"Unsupported SENTINEL_LLM_PROVIDER: {settings.llm_provider}")
         if not api_key:
-            return None
+            return None, model
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - optional dependency boundary
             raise RuntimeError("openai is required when SENTINEL_OPENAI_API_KEY is set") from exc
-        return OpenAI(api_key=api_key)
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return OpenAI(**kwargs), model
 
     def handle(self, request: OperationRequest) -> ToolResult:
         if not self.client:
             return ToolResult(
                 False,
-                "SENTINEL_OPENAI_API_KEY is required. Sentinel no longer guesses MCP tools without the LLM.",
+                f"LLM API key is required for provider {self.settings.llm_provider}.",
             )
 
         try:
             response = self.client.responses.create(
-                model=self.settings.openai_model,
+                model=self.model,
                 instructions=self._instructions(),
                 input=self._input(request),
                 tools=self.mcp.openai_tool_schemas(),

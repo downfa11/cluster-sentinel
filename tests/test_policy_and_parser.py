@@ -224,3 +224,12 @@ def test_slack_dms_are_disabled_by_default(monkeypatch) -> None:
     monkeypatch.delenv("SENTINEL_SLACK_ALLOW_DMS", raising=False)
 
     assert Settings().slack_allow_dms is False
+
+def test_gemini_is_default_llm_provider(monkeypatch) -> None:
+    monkeypatch.delenv("SENTINEL_LLM_PROVIDER", raising=False)
+    settings = Settings(gemini_api_key="test")
+    orchestrator = AgentOrchestrator(settings, _FakeMcp())
+
+    assert settings.llm_provider == "gemini"
+    assert orchestrator.model == "gemini-2.5-flash"
+    assert str(orchestrator.client.base_url) == settings.gemini_base_url
