@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
@@ -83,8 +87,28 @@ jobs:
         shell: bash
         working-directory: cluster-config
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
         run: |
+          is_current_source() {
+            local latest_source_sha
+            latest_source_sha="$(
+              curl --fail --silent --show-error \
+                --header "Accept: application/vnd.github+json" \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/$SOURCE_REPOSITORY/commits/main" \
+                | python -c 'import json, sys; print(json.load(sys.stdin)["sha"])'
+            )"
+            [ "$latest_source_sha" = "$SOURCE_SHA" ]
+          }
+
+          if ! is_current_source; then
+            echo "skipping stale source commit $SOURCE_SHA; main has advanced"
+            exit 0
+          fi
+
           git config user.name "home-gitops-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add clusters/home/apps/cluster-sentinel.yaml
@@ -94,6 +118,10 @@ jobs:
           fi
           git commit --signoff -m "deploy: update sentinel image to ${SOURCE_SHA::7}"
           for attempt in 1 2 3; do
+            if ! is_current_source; then
+              echo "skipping stale source commit $SOURCE_SHA; main has advanced"
+              exit 0
+            fi
             if git push origin HEAD:main; then
               exit 0
             fi

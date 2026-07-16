@@ -56,11 +56,24 @@ def test_deploy_pr_patches_values_yaml() -> None:
         {"service": "api", "environment": "staging", "image_tag": "ghcr.io/example/api:v1"},
     )
 
-    rendered = draft.mutations[0].render("image:\n  repository: old\n  tag: old\n")
+    rendered = draft.mutations[0].render("image:\n  repository: old\n  tag: old\n  digest: sha256:old\n")
 
     assert "repository: ghcr.io/example/api" in rendered
     assert "tag: v1" in rendered
+    assert "digest:" not in rendered
     assert "lastRequestId: req-1" in rendered
+
+
+def test_rollback_pr_clears_stale_image_digest() -> None:
+    draft = GitOpsPullRequestFactory(Settings()).rollback(
+        make_request({Role.OPERATOR}),
+        {"service": "api", "environment": "production", "target": "ghcr.io/example/api:v0"},
+    )
+
+    rendered = draft.mutations[0].render("image:\n  repository: old\n  tag: v1\n  digest: sha256:old\n")
+
+    assert "tag: v0" in rendered
+    assert "digest:" not in rendered
 
 
 def test_tool_registry_requires_deploy_arguments() -> None:
