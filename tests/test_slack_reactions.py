@@ -58,12 +58,31 @@ def test_event_reaction_moves_from_loading_to_final(
         client,
     )
     assert replies[0]["text"].endswith(result.message)
+    assert replies[0]["thread_ts"] == "123.45"
     assert replies[0]["blocks"][0]["type"] == "header"
     assert client.calls == [
         ("add", "hourglass_flowing_sand", "C1", "123.45"),
         ("remove", "hourglass_flowing_sand", "C1", "123.45"),
         ("add", final_reaction, "C1", "123.45"),
     ]
+
+
+def test_event_reply_stays_in_existing_thread() -> None:
+    replies: list[dict[str, Any]] = []
+
+    _bot(_Runtime())._handle_event(
+        {
+            "ts": "123.46",
+            "thread_ts": "100.20",
+            "text": "status",
+            "user": "U1",
+        },
+        "C1",
+        lambda **payload: replies.append(payload),
+        _Client(),
+    )
+
+    assert replies[0]["thread_ts"] == "100.20"
 
 
 def test_reaction_api_failure_does_not_block_reply() -> None:

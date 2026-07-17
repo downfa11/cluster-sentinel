@@ -183,6 +183,7 @@ class SentinelSlackBot:
         client: Any,
     ) -> None:
         timestamp = str(event.get("ts", ""))
+        thread_ts = str(event.get("thread_ts") or timestamp)
         self._reaction(client, "add", self.LOADING_REACTION, channel_id, timestamp)
         try:
             result = self.runtime.handle_text(
@@ -190,7 +191,7 @@ class SentinelSlackBot:
                 slack_user_id=str(event.get("user", "")),
                 channel_id=channel_id,
             )
-            say(**result_message(result))
+            say(thread_ts=thread_ts, **result_message(result))
         except Exception:
             self._reaction(client, "remove", self.LOADING_REACTION, channel_id, timestamp)
             self._reaction(client, "add", self.FAILURE_REACTION, channel_id, timestamp)

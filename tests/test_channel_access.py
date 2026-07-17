@@ -48,6 +48,19 @@ def test_unregistered_actor_remains_denied_outside_channel() -> None:
     ).allowed
 
 
+def test_runtime_treats_control_and_onboarding_channels_as_read_only() -> None:
+    runtime = SentinelRuntime(
+        Settings(
+            slack_control_channels={"C-CONTROL"},
+            slack_onboarding_channel_id="C-ONBOARD",
+        )
+    )
+
+    assert runtime.policy.authorize_request(_request("C-CONTROL")).allowed
+    assert runtime.policy.authorize_request(_request("C-ONBOARD")).allowed
+    assert not runtime.policy.authorize_request(_request("C-OTHER")).allowed
+
+
 def _runtime(users: str) -> tuple[SentinelRuntime, list[PullRequestDraft]]:
     runtime = SentinelRuntime(
         Settings(
