@@ -177,3 +177,20 @@ sentinel-slack-notify --severity warning --title "Sentinel test" --body "Slack a
 LLM은 판단과 tool 선택을 담당합니다. 하지만 GitHub PR 생성, Argo CD 조회, Grafana 조회 같은 실제 동작은 안전하게 구현된 tool 코드가 수행해야 합니다. 그래야 권한 검사, 감사 로그, 오류 처리, secret 차단, GitOps PR 생성 규칙을 강제할 수 있습니다.
 
 
+
+## 운영 DB 자연어 조회
+
+`SENTINEL_DB_READ_ENABLED=true`이면 `admin` 또는 `operator`가 다음처럼 요청할 수 있습니다.
+
+- `commerce에서 오늘 생성된 주문 수 보여줘`
+- `wargame에서 최근 완료된 매치 20개 보여줘`
+
+Sentinel은 필요할 때만 허용된 스키마 메타데이터를 조회한 뒤 MySQL Router
+read-only 포트에서 AST 검증된 `SELECT`를 최대 한 번 실행합니다. 쓰기, DDL,
+다중 statement, 시스템 스키마, cross-database 참조, 위험 함수, 모호한 요청은
+거부합니다. Slack 출력은 50행과 64 KiB로 제한되며 감사 로그에는 SQL이나
+결과 데이터가 남지 않습니다.
+
+`SENTINEL_DB_READ_ENABLED=false`로 DB 기능만 비활성화할 수 있습니다.
+전체 보안·설정 계약은
+[Production database read tools](docs/specs/DATABASE_READ.md)를 참고하세요.

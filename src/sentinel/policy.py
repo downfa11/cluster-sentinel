@@ -16,6 +16,7 @@ class PolicyEngine:
         "grafana_alerts",
         "access_get_user",
     }
+    DATABASE_READ_TOOLS = {"db_get_schema", "db_query_readonly"}
     DEPLOYMENT_PR_TOOLS = {
         "github_create_deploy_pr",
         "github_create_restart_pr",
@@ -29,7 +30,7 @@ class PolicyEngine:
     }
 
     def authorize_request(self, request: OperationRequest) -> PolicyDecision:
-        if not request.principal.slack_user_id:
+        if not request.principal.slack_user_id or not request.principal.roles:
             return PolicyDecision(False, "unknown Slack actor", [], {})
         if not request.principal.roles:
             return PolicyDecision(False, "Slack actor is not registered for Sentinel", [], {})
@@ -49,6 +50,18 @@ class PolicyEngine:
 
         if tool_name == "audit_write":
             return PolicyDecision(False, "audit tool is internal only", [], {})
+
+        if tool_name in self.DATABASE_READ_TOOLS:
+            if Role.OPERATOR not in roles and Role.ADMIN not in roles:
+                return PolicyDecision(
+                    False, "production database queries require operator or admin role", [], {}
+                )
+            return PolicyDecision(
+                True,
+                "production database read-only query",
+                [],
+                self._constraints_for(tool_name, args),
+            )
 
         if tool_name in self.READ_TOOLS:
             return self._authorize_read_tool(request, tool_name, args, environment)

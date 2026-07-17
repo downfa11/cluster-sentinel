@@ -208,3 +208,20 @@ sentinel-slack-notify --severity warning --title "Sentinel test" --body "Slack a
 Apache License 2.0.
 
 
+
+## Production database questions
+
+When `SENTINEL_DB_READ_ENABLED=true`, an `admin` or `operator` can ask:
+
+- `commerce에서 오늘 생성된 주문 수 보여줘`
+- `wargame에서 최근 완료된 매치 20개 보여줘`
+
+Sentinel loads allowlisted schema metadata only when needed, then executes at
+most one AST-validated `SELECT` through the MySQL Router read-only port.
+Writes, DDL, multiple statements, system schemas, cross-database references,
+unsafe functions, and ambiguous requests are refused. Slack output is limited
+to 50 rows and 64 KiB, and database audits contain no SQL or result data.
+
+Set `SENTINEL_DB_READ_ENABLED=false` to disable only database functions.
+See [Production database read tools](docs/specs/DATABASE_READ.md) for the
+complete security and configuration contract.

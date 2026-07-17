@@ -132,3 +132,9 @@ class Settings:
     operator_slack_user_ids: set[str] = field(
         default_factory=lambda: _env_set("SENTINEL_OPERATOR_SLACK_USER_IDS")
     )
+    db_read_enabled: bool = field(
+        default_factory=lambda: _env_bool("SENTINEL_DB_READ_ENABLED", False)
+    )
+    db_read_targets: dict[str, dict[str, str]] = field(
+        default_factory=lambda: _env_object("SENTINEL_DB_READ_TARGETS")
+    )
