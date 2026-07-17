@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import re
+import secrets
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Callable
@@ -58,26 +59,34 @@ class GitHubClient:
         action = _SAFE_NAME.sub("-", draft.action.lower()).strip("-") or "change"
         suffix = draft.idempotency_key or request.request_id[:8].lower()
         suffix = _SAFE_NAME.sub("-", suffix.lower()).strip("-")
-        branch = f"fix/sentinel-{action}-{suffix}"
+        branch_prefix = f"fix/sentinel-{action}-{suffix}"
         base_url = f"https://api.github.com/repos/{owner}/{repo}"
 
         with self._http_client() as client:
-            existing = self._open_pull_request(client, base_url, owner, branch)
+            existing = self._open_pull_request(client, base_url, owner, branch_prefix)
             if existing:
+                existing_head = existing.get("head")
+                existing_branch = (
+                    str(existing_head.get("ref") or branch_prefix)
+                    if isinstance(existing_head, dict)
+                    else branch_prefix
+                )
                 return ToolResult(
                     ok=True,
                     message="draft pull request already pending",
                     data={
                         "pull_request_url": existing["html_url"],
-                        "branch": branch,
+                        "branch": existing_branch,
                         "already_pending": True,
                     },
                 )
             base_ref = client.get(f"{base_url}/git/ref/heads/{self.settings.github_default_branch}")
             base_ref.raise_for_status()
             sha = base_ref.json()["object"]["sha"]
+            branch = f"{branch_prefix}-{secrets.token_hex(4)}"
             created = client.post(
-                f"{base_url}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha}
+                f"{base_url}/git/refs",
+                json={"ref": f"refs/heads/{branch}", "sha": sha},
             )
             created.raise_for_status()
 
@@ -123,17 +132,25 @@ class GitHubClient:
             f"{base_url}/pulls",
             params={
                 "state": "open",
-                "head": f"{owner}:{branch}",
                 "base": self.settings.github_default_branch,
-                "per_page": 1,
+                "per_page": 100,
             },
         )
         response.raise_for_status()
         pulls = response.json()
-        if not isinstance(pulls, list) or not pulls:
+        if not isinstance(pulls, list):
             return None
-        first = pulls[0]
-        return first if isinstance(first, dict) else None
+        expected_prefix = f"{branch}-"
+        for pull in pulls:
+            if not isinstance(pull, dict):
+                continue
+            head = pull.get("head")
+            head_ref = str(head.get("ref") or "") if isinstance(head, dict) else ""
+            head_owner = head.get("repo", {}).get("owner", {}) if isinstance(head, dict) else {}
+            head_login = str(head_owner.get("login") or "") if isinstance(head_owner, dict) else ""
+            if head_login == owner and (head_ref == branch or head_ref.startswith(expected_prefix)):
+                return pull
+        return None
 
     def read_file(self, path: str) -> str:
         if not self.settings.github_token:
@@ -272,7 +289,10 @@ class GitOpsPullRequestFactory:
         for item in users:
             if not isinstance(item, dict):
                 continue
-            ids = {str(item.get(key) or "") for key in ("id", "email", "slack", "github")}
+            ids = {
+                str(item.get(key) or "")
+                for key in ("id", "email", "slack_user_id", "slack", "github")
+            }
             if identifier in ids:
                 return {str(key): str(value) for key, value in item.items() if value is not None}
         return None
@@ -387,7 +407,8 @@ class GitOpsPullRequestFactory:
         if args.get("github") or args.get("github_username"):
             user["github"] = str(args.get("github") or args.get("github_username"))
         if args.get("slack") or args.get("slack_user_id"):
-            user["slack"] = str(args.get("slack") or args.get("slack_user_id"))
+            user["slack_user_id"] = str(args.get("slack_user_id") or args.get("slack"))
+            user.pop("slack", None)
         return self._dump_yaml(values)
 
     def _render_tailscale_policy(self, current: str | None, args: dict[str, Any]) -> str:
@@ -485,7 +506,10 @@ class GitOpsPullRequestFactory:
         for item in users:
             if not isinstance(item, dict):
                 continue
-            ids = {str(item.get(key) or "") for key in ("id", "email", "slack", "github")}
+            ids = {
+                str(item.get(key) or "")
+                for key in ("id", "email", "slack_user_id", "slack", "github")
+            }
             if identifier in ids:
                 return item
         if action != "onboard":

@@ -77,7 +77,7 @@ def test_onboarding_creates_gui_user_draft_with_deterministic_key() -> None:
     assert drafts[0].idempotency_key
     rendered = drafts[0].mutations[0].render("users: []\n")
     assert "role: gui-user" in rendered
-    assert "slack: U-NEW" in rendered
+    assert "slack_user_id: U-NEW" in rendered
     assert "email: tailscale.user@example.com" in rendered
 
 
@@ -96,6 +96,25 @@ def test_existing_slack_mapping_does_not_create_duplicate_pr() -> None:
 
     assert result.ok
     assert result.data["onboarding_status"] == "already_registered"
+    assert drafts == []
+
+
+def test_canonical_slack_identity_is_matched_and_conflicts_are_rejected() -> None:
+    users = """users:
+  - id: known
+    email: known@example.com
+    slack_user_id: U-KNOWN
+    role: gui-user
+    status: active
+"""
+    runtime, drafts = _runtime(users)
+
+    registered = runtime.handle_onboarding("U-KNOWN", "C-ONBOARD", "known@example.com")
+    conflict = runtime.handle_onboarding("U-OTHER", "C-ONBOARD", "known@example.com")
+
+    assert registered.ok
+    assert registered.data["onboarding_status"] == "already_registered"
+    assert not conflict.ok
     assert drafts == []
 
 
@@ -127,8 +146,16 @@ def test_onboarding_is_rejected_outside_configured_channel() -> None:
 class _Response:
     status_code = 200
 
-    def json(self) -> list[dict[str, str]]:
-        return [{"html_url": "https://example.test/pr/7"}]
+    def json(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "html_url": "https://example.test/pr/7",
+                "head": {
+                    "ref": "fix/sentinel-access-onboard-abc123-existing",
+                    "repo": {"owner": {"login": "owner"}},
+                },
+            }
+        ]
 
     def raise_for_status(self) -> None:
         return None
@@ -170,5 +197,5 @@ def test_existing_deterministic_onboarding_pr_is_reused() -> None:
     assert result.ok
     assert result.data["already_pending"] is True
     assert result.data["pull_request_url"] == "https://example.test/pr/7"
-    assert http.get_calls[0][1]["params"]["head"] == "owner:fix/sentinel-access-onboard-abc123"
+    assert http.get_calls[0][1]["params"] == {"state": "open", "base": "main", "per_page": 100}
     assert not http.write_called

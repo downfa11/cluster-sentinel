@@ -118,7 +118,9 @@ class SentinelRuntime:
                         {"onboarding_status": "already_registered"},
                     )
             if email_user:
-                registered_slack = str(email_user.get("slack") or "")
+                registered_slack = str(
+                    email_user.get("slack_user_id") or email_user.get("slack") or ""
+                )
                 if registered_slack and registered_slack != slack_user_id:
                     return ToolResult(
                         False,

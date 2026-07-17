@@ -150,7 +150,7 @@ def test_operational_environment_is_server_side_and_cannot_be_spoofed() -> None:
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, payload: dict[str, Any] | None = None) -> None:
+    def __init__(self, status: int = 200, payload: Any = None) -> None:
         self.status_code = status
         self._payload = payload or {}
 
@@ -175,7 +175,9 @@ class _FakeHttpClient:
 
     def get(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append(("GET", url, kwargs))
-        if "/git/ref/heads/" in url:
+        if url.endswith("/pulls"):
+            return _FakeResponse(payload=[])
+        if url.endswith("/git/ref/heads/main"):
             return _FakeResponse(payload={"object": {"sha": "base-sha"}})
         content = base64.b64encode(b"old\n").decode()
         return _FakeResponse(payload={"sha": "file-sha", "content": content})
@@ -220,6 +222,47 @@ def test_live_github_pr_is_draft_signed_off_and_cleans_failed_branch() -> None:
     with pytest.raises(RuntimeError, match="HTTP 500"):
         client.create_pr(_request(), draft)
     assert any(call[0] == "DELETE" and "/git/refs/heads/" in call[1] for call in failed.calls)
+
+
+def test_live_github_pr_uses_unique_branch_without_resetting_stale_branch() -> None:
+    settings = _access_settings(
+        github_token="token",
+        github_pr_dry_run=False,
+        github_commit_signoff="Sentinel <sentinel@example.com>",
+        gitops_repo="owner/repo",
+    )
+    draft = PullRequestDraft(
+        "access-onboard",
+        "access: onboard user@example.com",
+        "body",
+        [FileMutation("file.yaml", lambda _old: "new\n")],
+        "deterministic",
+    )
+    client = GitHubClient(settings)
+    first = _FakeHttpClient()
+    client._http_client = lambda: first  # type: ignore[method-assign]
+    first_result = client.create_pr(_request(), draft)
+
+    second = _FakeHttpClient()
+    client._http_client = lambda: second  # type: ignore[method-assign]
+    second_result = client.create_pr(_request(), draft)
+
+    assert first_result.ok and second_result.ok
+    first_ref = next(
+        call[2]["json"]["ref"]
+        for call in first.calls
+        if call[0] == "POST" and call[1].endswith("/git/refs")
+    )
+    second_ref = next(
+        call[2]["json"]["ref"]
+        for call in second.calls
+        if call[0] == "POST" and call[1].endswith("/git/refs")
+    )
+    prefix = "refs/heads/fix/sentinel-access-onboard-deterministic-"
+    assert first_ref.startswith(prefix)
+    assert second_ref.startswith(prefix)
+    assert first_ref != second_ref
+    assert not any(call[0] == "PATCH" for call in first.calls + second.calls)
 
 
 class _FakeArgo(ArgoCdClient):
@@ -300,7 +343,11 @@ def test_deployment_pr_rejects_environment_mismatch() -> None:
         }
     )
     registry = ToolRegistry(
-        PolicyEngine(), GitHubClient(settings), AuditLogger(), _CapturingArgo(), GrafanaClient(settings)
+        PolicyEngine(),
+        GitHubClient(settings),
+        AuditLogger(),
+        _CapturingArgo(),
+        GrafanaClient(settings),
     )
     result = registry.execute(
         _request(),
@@ -317,7 +364,11 @@ def test_deployment_pr_rejects_environment_mismatch() -> None:
 
 def test_access_tool_schemas_require_role() -> None:
     registry = ToolRegistry(
-        PolicyEngine(), GitHubClient(Settings()), AuditLogger(), _CapturingArgo(), GrafanaClient(Settings())
+        PolicyEngine(),
+        GitHubClient(Settings()),
+        AuditLogger(),
+        _CapturingArgo(),
+        GrafanaClient(Settings()),
     )
     schemas = {schema["name"]: schema for schema in registry.schemas}
     for name in ("github_create_grant_pr", "github_create_revoke_pr"):
@@ -330,9 +381,7 @@ def test_manifest_mutations_preserve_quotes_comments_and_existing_annotations() 
     new_digest = "b" * 64
     target = {"path": "deployment.yaml", "repository": "ghcr.io/example/api"}
     manifest = f'          image: "ghcr.io/example/api@sha256:{old_digest}"  # api image\n'
-    rendered = factory._render_image(
-        manifest, target, f"ghcr.io/example/api@sha256:{new_digest}"
-    )
+    rendered = factory._render_image(manifest, target, f"ghcr.io/example/api@sha256:{new_digest}")
     assert rendered == f'          image: "ghcr.io/example/api@sha256:{new_digest}"  # api image\n'
 
     deployment = """spec:
