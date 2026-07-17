@@ -78,6 +78,12 @@ class Settings:
     slack_allow_dms: bool = field(
         default_factory=lambda: _env_bool("SENTINEL_SLACK_ALLOW_DMS", False)
     )
+    slack_onboarding_channel_id: str | None = field(
+        default_factory=lambda: os.getenv("SENTINEL_SLACK_ONBOARDING_CHANNEL_ID") or None
+    )
+    slack_welcome_thread_ts: str | None = field(
+        default_factory=lambda: os.getenv("SENTINEL_SLACK_WELCOME_THREAD_TS") or None
+    )
 
     gitops_repo: str = field(
         default_factory=lambda: os.getenv("SENTINEL_GITOPS_REPO", "example/cluster-config")

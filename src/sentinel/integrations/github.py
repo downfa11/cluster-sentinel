@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ class PullRequestDraft:
     title: str
     body: str
     mutations: list[FileMutation]
+    idempotency_key: str | None = None
 
 
 class GitHubClient:
@@ -54,10 +56,23 @@ class GitHubClient:
 
         owner, repo = self.settings.gitops_repo.split("/", 1)
         action = _SAFE_NAME.sub("-", draft.action.lower()).strip("-") or "change"
-        branch = f"fix/sentinel-{action}-{request.request_id[:8].lower()}"
+        suffix = draft.idempotency_key or request.request_id[:8].lower()
+        suffix = _SAFE_NAME.sub("-", suffix.lower()).strip("-")
+        branch = f"fix/sentinel-{action}-{suffix}"
         base_url = f"https://api.github.com/repos/{owner}/{repo}"
 
         with self._http_client() as client:
+            existing = self._open_pull_request(client, base_url, owner, branch)
+            if existing:
+                return ToolResult(
+                    ok=True,
+                    message="draft pull request already pending",
+                    data={
+                        "pull_request_url": existing["html_url"],
+                        "branch": branch,
+                        "already_pending": True,
+                    },
+                )
             base_ref = client.get(f"{base_url}/git/ref/heads/{self.settings.github_default_branch}")
             base_ref.raise_for_status()
             sha = base_ref.json()["object"]["sha"]
@@ -100,6 +115,25 @@ class GitHubClient:
             message="draft pull request created",
             data={"pull_request_url": payload["html_url"], "branch": branch},
         )
+
+    def _open_pull_request(
+        self, client: Any, base_url: str, owner: str, branch: str
+    ) -> dict[str, Any] | None:
+        response = client.get(
+            f"{base_url}/pulls",
+            params={
+                "state": "open",
+                "head": f"{owner}:{branch}",
+                "base": self.settings.github_default_branch,
+                "per_page": 1,
+            },
+        )
+        response.raise_for_status()
+        pulls = response.json()
+        if not isinstance(pulls, list) or not pulls:
+            return None
+        first = pulls[0]
+        return first if isinstance(first, dict) else None
 
     def read_file(self, path: str) -> str:
         if not self.settings.github_token:
@@ -210,6 +244,9 @@ class GitOpsPullRequestFactory:
             raise RuntimeError("access change requires a supported action and user")
         if not _EMAIL.fullmatch(user):
             raise RuntimeError("access user must be an email address")
+        idempotency_key = None
+        if action == "onboard":
+            idempotency_key = hashlib.sha256(user.lower().encode("utf-8")).hexdigest()[:12]
         return PullRequestDraft(
             action=f"access-{action}",
             title=f"access: {action} {user}",
@@ -224,6 +261,7 @@ class GitOpsPullRequestFactory:
                     lambda current: self._render_tailscale_policy(current, args),
                 ),
             ],
+            idempotency_key=idempotency_key,
         )
 
     def find_access_user(self, current: str, identifier: str) -> dict[str, str] | None:
@@ -311,9 +349,7 @@ class GitOpsPullRequestFactory:
             return existing.sub(rf'\g<1>{annotation}: "{request_id}"', current, count=1)
         annotations = re.compile(r"(?m)^(\s{6}annotations:\s*(?:#.*)?)$")
         if annotations.search(current):
-            return annotations.sub(
-                rf'\1\n        {annotation}: "{request_id}"', current, count=1
-            )
+            return annotations.sub(rf'\1\n        {annotation}: "{request_id}"', current, count=1)
         marker = re.compile(r"(?m)^(\s{6}labels:\s*.*)$")
         rendered, count = marker.subn(
             rf'\1\n      annotations:\n        {annotation}: "{request_id}"', current, count=1
@@ -377,9 +413,7 @@ class GitOpsPullRequestFactory:
             members = groups.get(group_name)
             if not isinstance(members, list):
                 raise RuntimeError(f"managed Tailscale group is missing: {group_name}")
-            desired[group_name] = sorted(
-                {str(member) for member in members if member != email}
-            )
+            desired[group_name] = sorted({str(member) for member in members if member != email})
         action = str(args["action"])
         if action != "offboard":
             role = "gui-user" if action == "revoke" else self._role(args.get("role") or "gui-user")
@@ -391,9 +425,7 @@ class GitOpsPullRequestFactory:
             rendered = self._replace_hujson_group(rendered, group_name, members)
         return rendered if rendered.endswith("\n") else rendered + "\n"
 
-    def _replace_hujson_group(
-        self, current: str, group_name: str, members: list[str]
-    ) -> str:
+    def _replace_hujson_group(self, current: str, group_name: str, members: list[str]) -> str:
         key = re.escape(json.dumps(group_name))
         match = re.search(rf"(?P<indent>[ \t]*){key}\s*:\s*\[", current)
         if not match:

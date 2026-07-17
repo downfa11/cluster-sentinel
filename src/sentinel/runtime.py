@@ -10,9 +10,9 @@ from sentinel.config import Settings
 from sentinel.database import DatabaseService
 from sentinel.identity import IdentityResolver
 from sentinel.integrations.argocd import ArgoCdClient
-from sentinel.integrations.github import GitHubClient
+from sentinel.integrations.github import GitHubClient, GitOpsPullRequestFactory
 from sentinel.integrations.grafana import GrafanaClient
-from sentinel.models import OperationRequest, ToolResult
+from sentinel.models import OperationRequest, Principal, ToolResult
 from sentinel.policy import PolicyEngine
 
 
@@ -20,12 +20,18 @@ class SentinelRuntime:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.identity = IdentityResolver(settings)
-        self.policy = PolicyEngine()
+        readonly_channels = (
+            {settings.slack_onboarding_channel_id}
+            if settings.slack_onboarding_channel_id
+            else set()
+        )
+        self.policy = PolicyEngine(readonly_channels)
         self.audit = AuditLogger()
-        github = GitHubClient(settings)
+        self.github = GitHubClient(settings)
+        self.access_factory = GitOpsPullRequestFactory(settings)
         self.tools = ToolRegistry(
             policy=self.policy,
-            github=github,
+            github=self.github,
             audit=self.audit,
             argocd=ArgoCdClient(settings),
             grafana=GrafanaClient(settings),
@@ -64,6 +70,100 @@ class SentinelRuntime:
             completion_metadata,
         )
         return result
+
+    def onboarding_status(self, slack_user_id: str, channel_id: str) -> ToolResult:
+        request = self._onboarding_request(slack_user_id, channel_id)
+        if channel_id != self.settings.slack_onboarding_channel_id:
+            return ToolResult(False, "onboarding is only allowed in the configured channel")
+        try:
+            current = self.github.read_file("access/users.yaml")
+            user = self.access_factory.find_access_user(current, slack_user_id)
+        except Exception as exc:
+            self.audit.write("onboarding.lookup", request, "error")
+            return ToolResult(False, f"onboarding lookup failed ({exc.__class__.__name__})")
+        if user and user.get("status", "active") == "active":
+            return ToolResult(
+                True,
+                "Sentinel registration is already complete.",
+                {"onboarding_status": "already_registered"},
+            )
+        return ToolResult(
+            True,
+            "Sentinel registration is required.",
+            {"onboarding_status": "unregistered"},
+        )
+
+    def handle_onboarding(
+        self, slack_user_id: str, channel_id: str, tailscale_email: str
+    ) -> ToolResult:
+        request = self._onboarding_request(slack_user_id, channel_id)
+        email = tailscale_email.strip().lower()
+        if channel_id != self.settings.slack_onboarding_channel_id:
+            return ToolResult(False, "onboarding is only allowed in the configured channel")
+        try:
+            current = self.github.read_file("access/users.yaml")
+            slack_user = self.access_factory.find_access_user(current, slack_user_id)
+            email_user = self.access_factory.find_access_user(current, email)
+            if slack_user:
+                registered_email = str(slack_user.get("email") or "").lower()
+                if registered_email and registered_email != email:
+                    return ToolResult(
+                        False,
+                        "this Slack user is already linked to a different Tailscale account",
+                    )
+                if slack_user.get("status", "active") == "active":
+                    return ToolResult(
+                        True,
+                        f"Sentinel registration already exists for {self._mask_email(email)}.",
+                        {"onboarding_status": "already_registered"},
+                    )
+            if email_user:
+                registered_slack = str(email_user.get("slack") or "")
+                if registered_slack and registered_slack != slack_user_id:
+                    return ToolResult(
+                        False,
+                        "this Tailscale account is already linked to another Slack user",
+                    )
+
+            args = {
+                "action": "onboard",
+                "user": email,
+                "email": email,
+                "slack_user_id": slack_user_id,
+                "role": str((slack_user or email_user or {}).get("role") or "gui-user"),
+            }
+            result = self.github.create_pr(
+                request, self.access_factory.access_change(request, args)
+            )
+        except Exception as exc:
+            self.audit.write("onboarding.completed", request, "error")
+            return ToolResult(False, f"onboarding failed ({exc.__class__.__name__})")
+
+        status = "pending" if result.data.get("already_pending") else "created"
+        result.data["onboarding_status"] = status
+        result.data["tailscale_email"] = self._mask_email(email)
+        self.audit.write(
+            "onboarding.completed",
+            request,
+            "success",
+            {"onboarding_status": status},
+        )
+        return result
+
+    def _onboarding_request(self, slack_user_id: str, channel_id: str) -> OperationRequest:
+        return OperationRequest(
+            request_id=str(uuid.uuid4()),
+            channel_id=channel_id,
+            text="slash onboarding",
+            principal=Principal(slack_user_id, slack_user_id, None, set()),
+            command="onboarding",
+        )
+
+    def _mask_email(self, email: str) -> str:
+        local, separator, domain = email.partition("@")
+        if not separator:
+            return "invalid-account"
+        return f"{local[:2]}***@{domain}"
 
     def format_result(self, result: ToolResult) -> str:
         status = "OK" if result.ok else "DENIED"

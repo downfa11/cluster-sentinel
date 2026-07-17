@@ -5,9 +5,11 @@ Cluster Sentinel exposes two MCP tools when `SENTINEL_DB_READ_ENABLED=true`:
 - `db_get_schema(database, reason)` returns non-sensitive table and column metadata;
 - `db_query_readonly(database, sql, reason, limit=100)` executes one safe read.
 
-`database` is restricted to `commerce` or `wargame`. Only Slack identities resolved as
-`admin` or `operator` can call either tool. Unknown Slack users are fail-closed; they are not
-assigned the `dev` role. `dev` and `gui-user` identities are denied production database access.
+`database` is restricted to `commerce` or `wargame`. Either a Slack identity resolved as
+`admin`/`operator`, or any member asking in the single configured private onboarding channel, may
+call these read-only tools. Channel membership does not assign a role. Unknown Slack users remain
+fail-closed outside that channel; `dev` and `gui-user` identities remain denied there. Deployment,
+access-change, and other PR-writing tools never inherit channel access.
 
 Example Slack questions:
 

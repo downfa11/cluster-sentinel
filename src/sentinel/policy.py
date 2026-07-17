@@ -29,12 +29,22 @@ class PolicyEngine:
         "github_create_revoke_pr",
     }
 
+    def __init__(self, readonly_channel_ids: set[str] | None = None) -> None:
+        self.readonly_channel_ids = readonly_channel_ids or set()
+
+    def _is_readonly_channel(self, request: OperationRequest) -> bool:
+        return bool(
+            request.principal.slack_user_id and request.channel_id in self.readonly_channel_ids
+        )
+
     def authorize_request(self, request: OperationRequest) -> PolicyDecision:
-        if not request.principal.slack_user_id or not request.principal.roles:
+        if not request.principal.slack_user_id:
             return PolicyDecision(False, "unknown Slack actor", [], {})
-        if not request.principal.roles:
+        if not request.principal.roles and not self._is_readonly_channel(request):
             return PolicyDecision(False, "Slack actor is not registered for Sentinel", [], {})
-        return PolicyDecision(True, "authenticated Slack actor", [], {})
+        return PolicyDecision(
+            True, "authenticated Slack actor or approved read-only channel", [], {}
+        )
 
     def authorize_command(self, request: OperationRequest) -> PolicyDecision:
         return self.authorize_request(request)
@@ -52,6 +62,13 @@ class PolicyEngine:
             return PolicyDecision(False, "audit tool is internal only", [], {})
 
         if tool_name in self.DATABASE_READ_TOOLS:
+            if self._is_readonly_channel(request):
+                return PolicyDecision(
+                    True,
+                    "approved channel database read-only query",
+                    [],
+                    self._constraints_for(tool_name, args),
+                )
             if Role.OPERATOR not in roles and Role.ADMIN not in roles:
                 return PolicyDecision(
                     False, "production database queries require operator or admin role", [], {}
@@ -118,6 +135,14 @@ class PolicyEngine:
                     )
             return PolicyDecision(
                 True, "self access lookup", [], self._constraints_for(tool_name, args)
+            )
+
+        if self._is_readonly_channel(request):
+            return PolicyDecision(
+                True,
+                "approved channel read-only MCP tool",
+                [],
+                self._constraints_for(tool_name, args),
             )
 
         if environment == "production" and Role.OPERATOR not in roles and Role.ADMIN not in roles:

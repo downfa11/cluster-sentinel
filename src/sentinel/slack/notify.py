@@ -6,6 +6,7 @@ from typing import Any
 
 from sentinel.config import Settings
 from sentinel.env import load_dotenv
+from sentinel.slack.messages import alert_message, notification_message
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,18 @@ class SlackNotifier:
         self.settings = settings
 
     def post_message(self, text: str, channel_id: str | None = None) -> SlackPostResult:
+        return self._post(notification_message(text), channel_id)
+
+    def post_alert(
+        self,
+        severity: str,
+        title: str,
+        body: str | None,
+        channel_id: str | None = None,
+    ) -> SlackPostResult:
+        return self._post(alert_message(severity, title, body), channel_id)
+
+    def _post(self, payload: dict[str, Any], channel_id: str | None) -> SlackPostResult:
         target_channel = channel_id or self.settings.slack_alert_channel_id
         if not target_channel:
             raise RuntimeError("SENTINEL_SLACK_ALERT_CHANNEL_ID or --channel is required")
@@ -32,7 +45,7 @@ class SlackNotifier:
 
         response: Any = WebClient(token=self.settings.slack_bot_token).chat_postMessage(
             channel=target_channel,
-            text=text,
+            **payload,
         )
         return SlackPostResult(channel=str(response["channel"]), ts=str(response["ts"]))
 
@@ -54,8 +67,7 @@ def main() -> None:
     parser.add_argument("--body")
     args = parser.parse_args()
 
-    text = format_alert(args.severity, args.title, args.body)
-    result = SlackNotifier(Settings()).post_message(text, args.channel)
+    result = SlackNotifier(Settings()).post_alert(args.severity, args.title, args.body, args.channel)
     print(f"posted channel={result.channel} ts={result.ts}")
 
 

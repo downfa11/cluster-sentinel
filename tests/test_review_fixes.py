@@ -212,7 +212,7 @@ def test_live_github_pr_is_draft_signed_off_and_cleans_failed_branch() -> None:
     assert result.ok
     put = next(call for call in success.calls if call[0] == "PUT")
     assert "Signed-off-by: Sentinel <sentinel@example.com>" in put[2]["json"]["message"]
-    pull = next(call for call in success.calls if call[1].endswith("/pulls"))
+    pull = next(call for call in success.calls if call[0] == "POST" and call[1].endswith("/pulls"))
     assert pull[2]["json"]["draft"] is True
 
     failed = _FakeHttpClient(fail_put=True)

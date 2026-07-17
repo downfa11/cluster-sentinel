@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from sentinel.models import ToolResult
@@ -48,11 +50,15 @@ def test_event_reaction_moves_from_loading_to_final(
     result: ToolResult, final_reaction: str
 ) -> None:
     client = _Client()
-    replies: list[str] = []
+    replies: list[dict[str, Any]] = []
     _bot(_Runtime(result=result))._handle_event(
-        {"ts": "123.45", "text": "status", "user": "U1"}, "C1", replies.append, client
+        {"ts": "123.45", "text": "status", "user": "U1"},
+        "C1",
+        lambda **payload: replies.append(payload),
+        client,
     )
-    assert replies == [result.message]
+    assert replies[0]["text"].endswith(result.message)
+    assert replies[0]["blocks"][0]["type"] == "header"
     assert client.calls == [
         ("add", "hourglass_flowing_sand", "C1", "123.45"),
         ("remove", "hourglass_flowing_sand", "C1", "123.45"),
@@ -61,21 +67,24 @@ def test_event_reaction_moves_from_loading_to_final(
 
 
 def test_reaction_api_failure_does_not_block_reply() -> None:
-    replies: list[str] = []
+    replies: list[dict[str, Any]] = []
     _bot(_Runtime())._handle_event(
         {"ts": "123.45", "text": "status", "user": "U1"},
         "C1",
-        replies.append,
+        lambda **payload: replies.append(payload),
         _Client(fail_reactions=True),
     )
-    assert replies == ["done"]
+    assert replies[0]["text"] == "✅ Sentinel · 완료: done"
 
 
 def test_unexpected_failure_replaces_loading_with_x() -> None:
     client = _Client()
     with pytest.raises(RuntimeError, match="boom"):
         _bot(_Runtime(error=RuntimeError("boom")))._handle_event(
-            {"ts": "123.45", "text": "status", "user": "U1"}, "C1", lambda _text: None, client
+            {"ts": "123.45", "text": "status", "user": "U1"},
+            "C1",
+            lambda **_payload: None,
+            client,
         )
     assert client.calls[-2:] == [
         ("remove", "hourglass_flowing_sand", "C1", "123.45"),
