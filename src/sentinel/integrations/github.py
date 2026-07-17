@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -12,6 +13,7 @@ from sentinel.models import OperationRequest, ToolResult
 RenderFile = Callable[[str | None], str]
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_NAME = re.compile(r"[^a-z0-9-]+")
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ACCESS_ROLES = {"gui-user", "dev", "operator", "admin"}
 
 
@@ -62,25 +64,34 @@ class GitHubClient:
             )
             created.raise_for_status()
 
-            commit_message = (
-                f"{draft.title}\n\nSigned-off-by: {self.settings.github_commit_signoff}"
-            )
-            for mutation in draft.mutations:
-                self._mutate_file(client, base_url, branch, mutation, commit_message)
+            try:
+                commit_message = (
+                    f"{draft.title}\n\nSigned-off-by: {self.settings.github_commit_signoff}"
+                )
+                for mutation in draft.mutations:
+                    self._mutate_file(client, base_url, branch, mutation, commit_message)
 
-            pr = client.post(
-                f"{base_url}/pulls",
-                json={
-                    "title": draft.title,
-                    "head": branch,
-                    "base": self.settings.github_default_branch,
-                    "body": draft.body,
-                    "maintainer_can_modify": True,
-                    "draft": True,
-                },
-            )
-            pr.raise_for_status()
-            payload = pr.json()
+                pr = client.post(
+                    f"{base_url}/pulls",
+                    json={
+                        "title": draft.title,
+                        "head": branch,
+                        "base": self.settings.github_default_branch,
+                        "body": draft.body,
+                        "maintainer_can_modify": True,
+                        "draft": True,
+                    },
+                )
+                pr.raise_for_status()
+                payload = pr.json()
+            except Exception:
+                try:
+                    cleanup = client.delete(f"{base_url}/git/refs/heads/{branch}")
+                    if cleanup.status_code not in {204, 404}:
+                        cleanup.raise_for_status()
+                except Exception:
+                    pass
+                raise
 
         return ToolResult(
             ok=True,
@@ -195,6 +206,8 @@ class GitOpsPullRequestFactory:
         action = str(args.get("action") or "").strip()
         if not user or action not in {"onboard", "offboard", "grant", "revoke"}:
             raise RuntimeError("access change requires a supported action and user")
+        if not _EMAIL.fullmatch(user):
+            raise RuntimeError("access user must be an email address")
         return PullRequestDraft(
             action=f"access-{action}",
             title=f"access: {action} {user}",
@@ -203,7 +216,11 @@ class GitOpsPullRequestFactory:
                 FileMutation(
                     "access/users.yaml",
                     lambda current: self._render_access_users(current, args),
-                )
+                ),
+                FileMutation(
+                    "external/tailscale/policy.hujson",
+                    lambda current: self._render_tailscale_policy(current, args),
+                ),
             ],
         )
 
@@ -322,6 +339,36 @@ class GitOpsPullRequestFactory:
             user["slack"] = str(args.get("slack") or args.get("slack_user_id"))
         return self._dump_yaml(values)
 
+    def _render_tailscale_policy(self, current: str | None, args: dict[str, Any]) -> str:
+        if not current or not current.strip():
+            raise RuntimeError("external/tailscale/policy.hujson does not exist or is empty")
+        try:
+            policy = json.loads(current)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("external/tailscale/policy.hujson must be valid JSON") from exc
+        groups = policy.get("groups")
+        if not isinstance(groups, dict):
+            raise RuntimeError("Tailscale policy must contain a groups mapping")
+        role_groups = {
+            role: str(metadata.get("tailscale_group") or "")
+            for role, metadata in self.settings.access_role_groups.items()
+            if isinstance(metadata, dict)
+        }
+        if set(role_groups) != _ACCESS_ROLES or any(not value for value in role_groups.values()):
+            raise RuntimeError("SENTINEL_ACCESS_ROLE_GROUPS must map every access role")
+        email = str(args["user"]).strip()
+        for group_name in role_groups.values():
+            members = groups.get(group_name)
+            if not isinstance(members, list):
+                raise RuntimeError(f"managed Tailscale group is missing: {group_name}")
+            groups[group_name] = sorted({str(member) for member in members if member != email})
+        action = str(args["action"])
+        if action != "offboard":
+            role = "gui-user" if action == "revoke" else self._role(args.get("role") or "gui-user")
+            group_name = role_groups[role]
+            groups[group_name] = sorted({*groups[group_name], email})
+        return json.dumps(policy, indent=2, ensure_ascii=False) + "\n"
+
     def _find_or_create_user(
         self, users: list[Any], identifier: str, action: str
     ) -> dict[str, Any]:
@@ -402,6 +449,10 @@ class GitOpsPullRequestFactory:
                 "",
                 "## External Apply Steps",
                 "",
-                "- None. Argo CD applies the merged GitOps change.",
+                (
+                    "- The cluster-config access-sync workflow publishes the reviewed Tailscale policy."
+                    if access
+                    else "- None. Argo CD applies the merged GitOps change."
+                ),
             ]
         )

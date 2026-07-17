@@ -1,62 +1,28 @@
 # Tool Specification
 
-Sentinel exposes MCP-style tools to the LLM. The model selects tools, but Sentinel executes them only after policy authorization.
+The LLM may select only these tools. Sentinel resolves applications and environments from server-side allowlists before policy authorization.
 
-## Safety rule
+## GitOps PR tools
 
-No tool may execute shell commands, run kubectl, run terraform, SSH into hosts, read secrets, or mutate Kubernetes directly. Write tools create GitHub pull requests only.
+- `github_create_deploy_pr(service, environment, image_tag)`: replace the configured image with an immutable sha256 digest.
+- `github_create_restart_pr(service, environment)`: update the configured Deployment Pod-template restart annotation.
+- `github_create_rollback_pr(service, environment, target)`: replace the configured image with an immutable rollback digest.
+- `github_create_onboard_pr`, `github_create_offboard_pr`, `github_create_grant_pr`, `github_create_revoke_pr`: update `access/users.yaml` and the managed role groups in `external/tailscale/policy.hujson`.
 
-## Tools
+Every write creates a signed-off draft PR. Sentinel never merges it.
 
-### github_create_deploy_pr
+## Argo CD read tools
 
-Creates a GitOps PR that patches Helm values at `apps/{service}/overlays/{environment}/values.yaml` by updating:
+- `argocd_list_applications()`: list allowlisted applications with health and sync state.
+- `argocd_list_out_of_sync()`: list allowlisted OutOfSync applications.
+- `argocd_get_status(service)`: read health, sync, revision, and conditions.
+- `argocd_diff(service)`: list managed resources.
+- `argocd_list_pods(service)`: list Pods managed by the application.
+- `argocd_get_logs(service, pod?, container?, tail_lines?)`: read 1–500 recent lines from a Pod and container that belong to the allowlisted application. Output is capped before returning to Slack.
 
-```yaml
-image:
-  repository: ghcr.io/example/api
-  tag: v1
-```
+## Other read tools
 
-Required inputs: `service`, `environment`, `image_tag`.
+- `grafana_alerts(service)`: return active matching alert summaries.
+- `access_get_user(user)`: read non-sensitive metadata from the GitHub-managed access source.
 
-### github_create_restart_pr
-
-Creates a GitOps PR that patches:
-
-```yaml
-podAnnotations:
-  sentinel.dev/restartedAt: <request-id>
-```
-
-Required inputs: `service`, `environment`.
-
-### github_create_rollback_pr
-
-Creates a GitOps PR that patches Helm image values to the rollback target.
-
-Required inputs: `service`, `environment`, `target`.
-
-### github_create_onboard_pr / github_create_offboard_pr / github_create_grant_pr / github_create_revoke_pr
-
-Creates reviewable PRs that patch `access/users.yaml`. After merge, `sentinel-access-sync` reconciles the approved state to GitHub teams, Grafana teams, Tailscale policy, and Argo CD RBAC policy output.
-
-### argocd_get_status
-
-Calls Argo CD API `GET /api/v1/applications/{app}` and returns health, sync status, revision, and conditions.
-
-### argocd_diff
-
-Calls Argo CD managed resources API and returns a redacted resource summary.
-
-### grafana_alerts
-
-Calls Grafana alert APIs and returns matching alert data.
-
-### access_get_user
-
-Returns non-sensitive access metadata. Current implementation is a placeholder until access source-of-truth lookup is expanded.
-
-## Removed
-
-Loki/log query tooling is intentionally not included in this implementation.
+No tool runs shell commands, kubectl, terraform, SSH, secret reads, direct sync, direct Kubernetes mutation, or PR merge.

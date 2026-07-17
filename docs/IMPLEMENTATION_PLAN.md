@@ -1,42 +1,20 @@
 # Implementation Plan
 
-## Phase 1: Bot foundation
+## Implemented
 
-- Python package and Dockerfile
-- Slack Socket Mode app
-- natural-language request runtime
-- JSON audit logs
+- Slack Socket Mode app mention handling and optional DM handling
+- Gemini/OpenAI tool calling with no heuristic fallback
+- fail-closed Slack identity and per-tool authorization
+- server-side GitOps and operational target allowlists
+- digest-pinned deploy/rollback and annotation restart draft PRs
+- access user plus reviewed Tailscale policy draft PRs
+- Argo CD app/status/resource/Pod/log reads and Grafana alert reads
+- JSON audit logs and visible multi-tool Slack results
+- DCO draft PR creation with orphan-branch cleanup tests
 
-## Phase 2: LLM tool selection
+## Future hardening
 
-- OpenAI Responses API integration
-- MCP-style in-process tool gateway
-- no heuristic execution when OpenAI key is missing
-
-## Phase 3: Policy Engine
-
-- Slack user to role mapping
-- tool-call authorization
-- production PR restriction
-- admin-only access PR restriction
-
-## Phase 4: GitHub PR tools
-
-- deploy PR patches Helm values image fields
-- restart PR patches restart annotation
-- rollback PR patches image fields to target
-- access tools patch `access/users.yaml` in reviewable PRs
-
-## Phase 5: Read-only operational APIs
-
-- Argo CD application status
-- Argo CD managed resource summary
-- Grafana alert reads
-
-## Phase 6: Production hardening
-
-- GitHub App auth instead of broad PATs
-- branch protection and CODEOWNERS
-- Supabase audit storage
+- GitHub App authentication instead of a broad token
 - structured Slack approval UX
-- richer access source-of-truth lookup and expiration automation
+- audit storage with retention and querying
+- access expiration and periodic reconciliation reporting

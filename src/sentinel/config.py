@@ -97,6 +97,12 @@ class Settings:
     gitops_targets: dict[str, dict[str, str]] = field(
         default_factory=lambda: _env_object("SENTINEL_GITOPS_TARGETS")
     )
+    operational_targets: dict[str, dict[str, str]] = field(
+        default_factory=lambda: _env_object("SENTINEL_OPERATIONAL_TARGETS")
+    )
+    access_role_groups: dict[str, dict[str, str]] = field(
+        default_factory=lambda: _env_object("SENTINEL_ACCESS_ROLE_GROUPS")
+    )
 
     argocd_base_url: str | None = field(
         default_factory=lambda: os.getenv("SENTINEL_ARGOCD_BASE_URL") or None

@@ -33,7 +33,7 @@ class IdentityResolver:
         elif slack_user_id in self.settings.operator_slack_user_ids:
             roles = {Role.OPERATOR}
         else:
-            roles = {Role.DEV}
+            roles = set()
 
         return Principal(
             user_id=slack_user_id,

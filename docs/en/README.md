@@ -1,43 +1,23 @@
 # Sentinel Documentation
 
-## Concept
+Sentinel is a natural-language Slack GitOps agent. Gemini or OpenAI selects an allowlisted tool, the policy engine authorizes the server-resolved target, and write tools create draft GitHub pull requests. Sentinel never merges PRs or mutates Kubernetes directly.
 
-Sentinel is not a command bot. It is an LLM-driven GitOps agent. Slack messages are natural language inputs; the model selects MCP-style tools; the policy engine authorizes the exact tool call; write tools create GitHub pull requests.
+## Implemented tools
 
-## Implemented Tools
+- Digest-pinned deploy, rollback, and restart draft PRs for explicitly configured workloads.
+- Access onboarding, offboarding, grant, and revoke draft PRs that update both `access/users.yaml` and `external/tailscale/policy.hujson`.
+- Argo CD application list, OutOfSync list, health/sync status, managed resources, managed Pod list, and bounded recent Pod logs.
+- Grafana active alert reads with visible Slack summaries.
+- GitHub-backed non-sensitive access metadata lookup.
 
-- `github_create_deploy_pr`: patches Helm values image fields and opens a PR.
-- `github_create_restart_pr`: patches restart annotation and opens a PR.
-- `github_create_rollback_pr`: patches image fields to the rollback target and opens a PR.
-- `github_create_onboard_pr`, `github_create_offboard_pr`, `github_create_grant_pr`, `github_create_revoke_pr`: patch `access/users.yaml` in a reviewable PR.
-- `argocd_get_status`: calls Argo CD API.
-- `argocd_diff`: reads Argo CD managed resources.
-- `grafana_alerts`: calls Grafana alert APIs.
-- `access_get_user`: local access metadata placeholder.
+All Argo CD and Grafana service names resolve through `SENTINEL_OPERATIONAL_TARGETS`; caller-provided environment strings cannot select a different application. Unknown Slack users have no role and are denied.
 
-Loki is intentionally not included.
+## GitOps writes
 
-## Required Runtime
+`SENTINEL_GITOPS_TARGETS` defines each writable manifest path, image repository, Argo CD application, and environment. Deploy and rollback replace exactly one allowlisted `repository@sha256:...` image. Restart updates `sentinel.dev/restartedAt` in the Deployment Pod template. Live PR commits include DCO sign-off, PRs are draft, and failed creation removes the temporary branch.
 
-Sentinel requires `SENTINEL_GEMINI_API_KEY` or `SENTINEL_OPENAI_API_KEY`; Gemini is preferred when both exist. Without either key, Sentinel refuses to guess tools.
+## Access sync
 
-## GitOps Writes
+The workflow belongs in `cluster-config`, where the source files live. It verifies that `access/users.yaml`, `access/roles.yaml`, and the reviewed Tailscale policy agree before publishing the policy. Unmanaged policy groups and all non-group policy fields are preserved.
 
-The default values path is `apps/{service}/overlays/{environment}/values.yaml`. Deploy and rollback update:
-
-```yaml
-image:
-  repository: ghcr.io/example/api
-  tag: v1
-```
-
-Restart updates:
-
-```yaml
-podAnnotations:
-  sentinel.dev/restartedAt: <request-id>
-```
-
-## Access Sync
-
-Merged access changes are applied by `sentinel-access-sync`. It reconciles GitHub teams and Grafana teams through their APIs, renders Tailscale policy JSON, can publish that policy through the Tailscale API, and generates Argo CD RBAC CSV for GitOps-managed Argo CD configuration.
+Channel messages require a bot mention. DMs are disabled by default and can be enabled explicitly with `SENTINEL_SLACK_ALLOW_DMS=true`.

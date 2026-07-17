@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from sentinel.models import OperationRequest, PolicyDecision, Risk, Role
 
@@ -9,6 +9,10 @@ class PolicyEngine:
     READ_TOOLS = {
         "argocd_get_status",
         "argocd_diff",
+        "argocd_list_applications",
+        "argocd_list_out_of_sync",
+        "argocd_list_pods",
+        "argocd_get_logs",
         "grafana_alerts",
         "access_get_user",
     }
@@ -27,6 +31,8 @@ class PolicyEngine:
     def authorize_request(self, request: OperationRequest) -> PolicyDecision:
         if not request.principal.slack_user_id:
             return PolicyDecision(False, "unknown Slack actor", [], {})
+        if not request.principal.roles:
+            return PolicyDecision(False, "Slack actor is not registered for Sentinel", [], {})
         return PolicyDecision(True, "authenticated Slack actor", [], {})
 
     def authorize_command(self, request: OperationRequest) -> PolicyDecision:
@@ -67,8 +73,14 @@ class PolicyEngine:
                     ["admin"] if environment == "production" else [],
                     self._constraints_for(tool_name, args),
                 )
-            if tool_name == "github_create_deploy_pr" and Role.DEV in roles and environment in {"dev", "staging"}:
-                return PolicyDecision(True, "dev non-production deploy PR", [], self._constraints_for(tool_name, args))
+            if (
+                tool_name == "github_create_deploy_pr"
+                and Role.DEV in roles
+                and environment in {"dev", "staging"}
+            ):
+                return PolicyDecision(
+                    True, "dev non-production deploy PR", [], self._constraints_for(tool_name, args)
+                )
             return PolicyDecision(False, "deployment PR tools require operator role", [], {})
 
         return PolicyDecision(False, f"unknown MCP tool: {tool_name}", [], {})
@@ -83,14 +95,23 @@ class PolicyEngine:
         roles = request.principal.roles
         if tool_name == "access_get_user":
             target = str(args.get("user") or "")
-            if target and target not in {request.principal.slack_user_id, request.principal.user_id}:
+            if target and target not in {
+                request.principal.slack_user_id,
+                request.principal.user_id,
+            }:
                 if Role.OPERATOR not in roles and Role.ADMIN not in roles:
-                    return PolicyDecision(False, "access lookup for other users requires operator role", [], {})
-            return PolicyDecision(True, "self access lookup", [], self._constraints_for(tool_name, args))
+                    return PolicyDecision(
+                        False, "access lookup for other users requires operator role", [], {}
+                    )
+            return PolicyDecision(
+                True, "self access lookup", [], self._constraints_for(tool_name, args)
+            )
 
         if environment == "production" and Role.OPERATOR not in roles and Role.ADMIN not in roles:
             return PolicyDecision(False, "production read tools require operator role", [], {})
-        return PolicyDecision(True, "read-only MCP tool", [], self._constraints_for(tool_name, args))
+        return PolicyDecision(
+            True, "read-only MCP tool", [], self._constraints_for(tool_name, args)
+        )
 
     def risk_for_tool(self, tool_name: str, args: dict[str, object]) -> Risk:
         if tool_name in self.ACCESS_PR_TOOLS:

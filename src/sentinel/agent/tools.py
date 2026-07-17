@@ -15,8 +15,12 @@ ToolHandler = Callable[[OperationRequest, dict[str, Any]], ToolResult]
 
 class ToolRegistry:
     REQUIRED_ARGS: dict[str, set[str]] = {
-        "argocd_get_status": {"service", "environment"},
-        "argocd_diff": {"service", "environment"},
+        "argocd_get_status": {"service"},
+        "argocd_diff": {"service"},
+        "argocd_list_applications": set(),
+        "argocd_list_out_of_sync": set(),
+        "argocd_list_pods": {"service"},
+        "argocd_get_logs": {"service"},
         "grafana_alerts": {"service"},
         "github_create_deploy_pr": {"service", "environment", "image_tag"},
         "github_create_restart_pr": {"service", "environment"},
@@ -60,6 +64,10 @@ class ToolRegistry:
             ),
             "argocd_get_status": self.argocd.get_status,
             "argocd_diff": self.argocd.diff,
+            "argocd_list_applications": self.argocd.list_applications,
+            "argocd_list_out_of_sync": self.argocd.list_out_of_sync,
+            "argocd_list_pods": self.argocd.list_pods,
+            "argocd_get_logs": self.argocd.get_logs,
             "grafana_alerts": self.grafana.alerts,
             "access_get_user": self._access_get_user,
         }
@@ -70,12 +78,31 @@ class ToolRegistry:
             self._schema(
                 "argocd_get_status",
                 "Read Argo CD app health and sync status.",
-                required={"service", "environment"},
+                required={"service"},
             ),
             self._schema(
                 "argocd_diff",
                 "Read Argo CD managed resource summary for an app.",
-                required={"service", "environment"},
+                required={"service"},
+            ),
+            self._schema(
+                "argocd_list_applications",
+                "List allowlisted Argo CD applications with health and sync status.",
+            ),
+            self._schema(
+                "argocd_list_out_of_sync",
+                "List allowlisted Argo CD applications whose sync status is OutOfSync.",
+            ),
+            self._schema(
+                "argocd_list_pods",
+                "List pods managed by an allowlisted Argo CD application.",
+                required={"service"},
+            ),
+            self._schema(
+                "argocd_get_logs",
+                "Read bounded recent logs from a pod managed by an allowlisted Argo CD application.",
+                logs=True,
+                required={"service"},
             ),
             self._schema(
                 "grafana_alerts", "Read active Grafana alerts for a service.", required={"service"}
@@ -99,7 +126,7 @@ class ToolRegistry:
             ),
             self._schema(
                 "github_create_rollback_pr",
-                "Create a GitOps rollback pull request by updating Helm values image fields.",
+                "Create a draft GitOps rollback PR for an allowlisted digest-pinned workload.",
                 target=True,
                 required={"service", "environment", "target"},
             ),
@@ -134,6 +161,10 @@ class ToolRegistry:
             return ToolResult(
                 False, f"missing required argument(s) for {tool_name}: {', '.join(missing)}"
             )
+        try:
+            server_args = self._canonical_args(tool_name, server_args)
+        except Exception as exc:
+            return ToolResult(False, f"invalid operational target: {self._safe_error(exc)}")
         invalid = self._invalid_argument_reason(tool_name, server_args)
         if invalid:
             return ToolResult(False, invalid)
@@ -209,6 +240,7 @@ class ToolRegistry:
         image: bool = False,
         target: bool = False,
         user: bool = False,
+        logs: bool = False,
         required: set[str] | None = None,
     ) -> dict[str, Any]:
         properties: dict[str, Any] = {
@@ -231,6 +263,18 @@ class ToolRegistry:
             }
         if user:
             properties["user"] = {"type": "string"}
+        if logs:
+            properties["pod"] = {
+                "type": "string",
+                "description": "Optional pod name; defaults to a non-running pod or the first pod.",
+            }
+            properties["container"] = {"type": "string", "description": "Optional container name."}
+            properties["tail_lines"] = {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "Number of recent lines, default 100.",
+            }
         return self._tool_schema(name, description, properties, required or set())
 
     def _access_schema(self, name: str, description: str, required: set[str]) -> dict[str, Any]:
@@ -238,7 +282,7 @@ class ToolRegistry:
             name,
             description,
             {
-                "user": {"type": "string", "description": "User email, user id, or Slack user id."},
+                "user": {"type": "string", "description": "User email address."},
                 "id": {"type": "string"},
                 "name": {"type": "string"},
                 "email": {"type": "string"},
@@ -273,6 +317,41 @@ class ToolRegistry:
                 missing.append(key)
         return missing
 
+    def _canonical_args(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        resolved = dict(args)
+        if tool_name in PolicyEngine.DEPLOYMENT_PR_TOOLS:
+            service = str(args.get("service") or "")
+            target = self.github.settings.gitops_targets.get(service)
+            if not target:
+                raise RuntimeError(f"unsupported GitOps service: {service}")
+            if not target.get("environment"):
+                raise RuntimeError(f"GitOps target has no environment: {service}")
+            resolved["environment"] = target["environment"]
+            return resolved
+        if tool_name in {"argocd_list_applications", "argocd_list_out_of_sync"}:
+            resolved["environment"] = "production"
+            return resolved
+        if tool_name not in {
+            "argocd_get_status",
+            "argocd_diff",
+            "argocd_list_pods",
+            "argocd_get_logs",
+            "grafana_alerts",
+        }:
+            return resolved
+        service = str(args.get("service") or "")
+        target = self.github.settings.operational_targets.get(service)
+        if not target:
+            raise RuntimeError(f"unsupported operational service: {service}")
+        application = target.get("application")
+        environment = target.get("environment")
+        if not application or not environment:
+            raise RuntimeError(f"operational target is incomplete: {service}")
+        resolved["environment"] = environment
+        resolved["_application"] = application
+        resolved["_grafana_match"] = target.get("grafana_match") or service
+        return resolved
+
     def _invalid_argument_reason(self, tool_name: str, args: dict[str, Any]) -> str | None:
         if tool_name in {"github_create_grant_pr", "github_create_revoke_pr"}:
             role = args.get("role")
@@ -284,7 +363,9 @@ class ToolRegistry:
         return {
             key: value
             for key, value in args.items()
-            if "secret" not in key.lower() and "token" not in key.lower()
+            if "secret" not in key.lower()
+            and "token" not in key.lower()
+            and not key.startswith("_")
         }
 
     def _safe_error(self, exc: Exception) -> str:

@@ -1,38 +1,12 @@
-﻿# GitOps and Kubernetes Specification
+# GitOps and Kubernetes Specification
 
-## Private cluster-config structure
+Sentinel writes only through draft GitHub pull requests. `SENTINEL_GITOPS_TARGETS` is the server-side allowlist for manifest path, immutable image repository, Argo CD application, and environment.
 
-```text
-cluster-config/
-  access/
-    users.yaml
-    roles.yaml
-    groups.yaml
-  argocd/
-  apps/
-    api/
-      overlays/dev/values.yaml
-      overlays/staging/values.yaml
-      overlays/production/values.yaml
-  monitoring/
-    prometheus/
-    grafana/
-  rbac/
-  slack/
-  tailscale/
-```
+- Deploy and rollback replace exactly one configured `repository@sha256:...` image.
+- Restart updates `sentinel.dev/restartedAt` under Deployment `spec.template.metadata`.
+- Access changes update both `access/users.yaml` and the reviewed Tailscale policy.
+- The cluster-config access workflow validates the rendered policy before publishing it.
 
-## Sentinel writes
+Read operations use Argo CD and Grafana APIs. Argo CD Pod logs are limited to Pods returned for the allowlisted application; arbitrary namespace or Pod access is rejected.
 
-Sentinel writes only through GitHub pull requests. Deploy and rollback tools patch Helm values files. Restart tools patch restart annotations in the same values file.
-
-## Namespaces
-
-- `sentinel-system`
-- `argocd`
-- `monitoring`
-- application namespaces such as `apps-dev`, `apps-staging`, `apps-production`
-
-## Service account
-
-The Sentinel Kubernetes service account should not have broad mutation rights. Runtime integrations should use GitHub, Argo CD read APIs, Grafana read APIs, and audit storage.
+The Sentinel service account does not require broad Kubernetes mutation rights. Sentinel does not expose direct Argo CD sync, PR merge, kubectl, SSH, arbitrary shell, or secret-read tools.

@@ -32,7 +32,7 @@ class AccessDirectory:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.users = self._load_users()
-        self.groups = self._load_groups()
+        self.groups = self._load_role_groups()
 
     def active_users(self) -> list[AccessUser]:
         return [user for user in self.users if user.status == "active"]
@@ -59,8 +59,8 @@ class AccessDirectory:
             )
         return users
 
-    def _load_groups(self) -> dict[str, AccessGroup]:
-        raw = self._load_yaml("groups.yaml").get("groups", {})
+    def _load_role_groups(self) -> dict[str, AccessGroup]:
+        raw = self._load_yaml("roles.yaml").get("roles", {})
         groups: dict[str, AccessGroup] = {}
         for name, item in raw.items():
             if not isinstance(item, dict):
@@ -93,8 +93,16 @@ class AccessSync:
     def render_tailscale_policy(
         self, existing_policy: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        policy = dict(existing_policy or {})
-        policy["groups"] = self.render_tailscale_groups()
+        if existing_policy is None:
+            raise RuntimeError("an existing Tailscale policy is required")
+        managed_groups = self.render_tailscale_groups()
+        if not managed_groups:
+            raise RuntimeError("access/roles.yaml defines no managed Tailscale groups")
+        policy = dict(existing_policy)
+        current_groups = policy.get("groups")
+        if not isinstance(current_groups, dict):
+            raise RuntimeError("the existing Tailscale policy must contain a groups mapping")
+        policy["groups"] = {**current_groups, **managed_groups}
         return policy
 
     def render_tailscale_groups(self) -> dict[str, list[str]]:
@@ -284,7 +292,7 @@ def _load_policy(path: str | None) -> dict[str, Any] | None:
         return None
     policy_path = Path(path)
     if not policy_path.exists():
-        return None
+        raise RuntimeError(f"Tailscale policy does not exist: {policy_path}")
     loaded = json.loads(policy_path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         raise RuntimeError(f"{policy_path} must contain a JSON object")
