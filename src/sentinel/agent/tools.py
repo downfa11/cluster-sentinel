@@ -27,8 +27,8 @@ class ToolRegistry:
         "github_create_rollback_pr": {"service", "environment", "target"},
         "github_create_onboard_pr": {"user"},
         "github_create_offboard_pr": {"user"},
-        "github_create_grant_pr": {"user"},
-        "github_create_revoke_pr": {"user"},
+        "github_create_grant_pr": {"user", "role"},
+        "github_create_revoke_pr": {"user", "role"},
         "access_get_user": {"user"},
     }
 
@@ -139,12 +139,14 @@ class ToolRegistry:
                 required={"user"},
             ),
             self._access_schema(
-                "github_create_grant_pr", "Create an access grant pull request.", required={"user"}
+                "github_create_grant_pr",
+                "Create an access grant pull request.",
+                required={"user", "role"},
             ),
             self._access_schema(
                 "github_create_revoke_pr",
                 "Create an access revoke pull request.",
-                required={"user"},
+                required={"user", "role"},
             ),
         ]
 
@@ -326,6 +328,11 @@ class ToolRegistry:
                 raise RuntimeError(f"unsupported GitOps service: {service}")
             if not target.get("environment"):
                 raise RuntimeError(f"GitOps target has no environment: {service}")
+            requested_environment = str(args.get("environment") or "")
+            if requested_environment != target["environment"]:
+                raise RuntimeError(
+                    f"unsupported environment for {service}: {requested_environment}"
+                )
             resolved["environment"] = target["environment"]
             return resolved
         if tool_name in {"argocd_list_applications", "argocd_list_out_of_sync"}:

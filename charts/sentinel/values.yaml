@@ -36,7 +36,9 @@ env:
   SENTINEL_GITOPS_REPO: owner/repo
   SENTINEL_GITHUB_DEFAULT_BRANCH: main
   SENTINEL_GITHUB_PR_DRY_RUN: "true"
-  SENTINEL_GITOPS_DEPLOY_VALUES_PATH_TEMPLATE: apps/{service}/overlays/{environment}/values.yaml
+  SENTINEL_GITOPS_TARGETS: '{"commerce-api":{"path":"apps/commerce/api/deployment.yaml","repository":"ghcr.io/example/commerce-api","application":"commerce","environment":"production"}}'
+  SENTINEL_OPERATIONAL_TARGETS: '{"commerce":{"application":"commerce","environment":"production","grafana_match":"commerce"}}'
+  SENTINEL_ACCESS_ROLE_GROUPS: '{"gui-user":{"tailscale_group":"group:gui-users"},"dev":{"tailscale_group":"group:dev"},"operator":{"tailscale_group":"group:operator"},"admin":{"tailscale_group":"group:admin"}}'
   SENTINEL_ARGOCD_BASE_URL: ""
   SENTINEL_GRAFANA_BASE_URL: ""
 

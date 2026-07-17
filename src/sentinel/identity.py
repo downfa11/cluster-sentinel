@@ -15,6 +15,8 @@ class IdentityResolver:
 
     def resolve_slack_user(self, slack_user_id: str) -> Principal:
         user = self._users.get(slack_user_id)
+        if user and str(user.get("status", "active")) != "active":
+            return Principal(slack_user_id, slack_user_id, None, set(), set())
         if user:
             raw_roles = user.get("roles")
             access_roles = raw_roles if isinstance(raw_roles, list) else [user.get("role", "dev")]

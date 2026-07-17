@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import hjson
 import yaml
 
 
@@ -293,7 +294,10 @@ def _load_policy(path: str | None) -> dict[str, Any] | None:
     policy_path = Path(path)
     if not policy_path.exists():
         raise RuntimeError(f"Tailscale policy does not exist: {policy_path}")
-    loaded = json.loads(policy_path.read_text(encoding="utf-8"))
+    try:
+        loaded = hjson.loads(policy_path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise RuntimeError(f"{policy_path} must contain valid HuJSON") from exc
     if not isinstance(loaded, dict):
         raise RuntimeError(f"{policy_path} must contain a JSON object")
     return loaded
@@ -328,16 +332,25 @@ def main() -> None:
         dry_run=args.dry_run,
         sync_removals=args.sync_removals,
     )
-    tailscale_policy = sync.render_tailscale_policy(_load_policy(args.tailscale_policy_in))
+    tailscale_requested = bool(args.tailscale_tailnet or args.tailscale_policy_out)
+    tailscale_policy = (
+        sync.render_tailscale_policy(_load_policy(args.tailscale_policy_in))
+        if tailscale_requested
+        else None
+    )
     result: dict[str, Any] = {
         "github": sync.sync_github_teams(args.github_org or "", args.github_token)
         if args.github_org
         else [],
         "grafana": sync.sync_grafana_teams(args.grafana_url, args.grafana_token),
-        "tailscale": sync.publish_tailscale_policy(
-            args.tailscale_tailnet,
-            args.tailscale_token,
-            tailscale_policy,
+        "tailscale": (
+            sync.publish_tailscale_policy(
+                args.tailscale_tailnet,
+                args.tailscale_token,
+                tailscale_policy,
+            )
+            if tailscale_policy is not None
+            else []
         ),
     }
 
@@ -348,6 +361,8 @@ def main() -> None:
         )
 
     if args.tailscale_policy_out:
+        if tailscale_policy is None:  # pragma: no cover - guarded by tailscale_requested
+            raise RuntimeError("Tailscale policy rendering was not requested")
         result["tailscale_policy_out"] = _write_json(args.tailscale_policy_out, tailscale_policy)
 
     if args.argocd_policy_out:

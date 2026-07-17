@@ -274,3 +274,119 @@ def test_argocd_listing_and_logs_are_allowlisted_and_rendered() -> None:
     assert "```\nready\n```" in logs.message
     with pytest.raises(RuntimeError, match="not managed"):
         argo.get_logs(_request(), {"_application": "commerce", "pod": "other"})
+
+
+def test_inactive_access_user_is_denied_even_if_statically_admin(tmp_path: Path) -> None:
+    users = tmp_path / "users.yaml"
+    users.write_text(
+        "users:\n  - id: former\n    slack: U-INACTIVE\n    role: admin\n    status: inactive\n",
+        encoding="utf-8",
+    )
+    principal = IdentityResolver(
+        Settings(access_users_path=str(users), admin_slack_user_ids={"U-INACTIVE"})
+    ).resolve_slack_user("U-INACTIVE")
+    assert principal.roles == set()
+
+
+def test_deployment_pr_rejects_environment_mismatch() -> None:
+    settings = Settings(
+        gitops_targets={
+            "commerce-api": {
+                "path": "apps/commerce/api/deployment.yaml",
+                "repository": "ghcr.io/example/commerce-api",
+                "application": "commerce",
+                "environment": "production",
+            }
+        }
+    )
+    registry = ToolRegistry(
+        PolicyEngine(), GitHubClient(settings), AuditLogger(), _CapturingArgo(), GrafanaClient(settings)
+    )
+    result = registry.execute(
+        _request(),
+        "github_create_deploy_pr",
+        {
+            "service": "commerce-api",
+            "environment": "staging",
+            "image_tag": "sha256:" + "a" * 64,
+        },
+    )
+    assert not result.ok
+    assert "unsupported environment" in result.message
+
+
+def test_access_tool_schemas_require_role() -> None:
+    registry = ToolRegistry(
+        PolicyEngine(), GitHubClient(Settings()), AuditLogger(), _CapturingArgo(), GrafanaClient(Settings())
+    )
+    schemas = {schema["name"]: schema for schema in registry.schemas}
+    for name in ("github_create_grant_pr", "github_create_revoke_pr"):
+        assert set(schemas[name]["parameters"]["required"]) == {"user", "role"}
+
+
+def test_manifest_mutations_preserve_quotes_comments_and_existing_annotations() -> None:
+    factory = GitOpsPullRequestFactory(Settings())
+    old_digest = "a" * 64
+    new_digest = "b" * 64
+    target = {"path": "deployment.yaml", "repository": "ghcr.io/example/api"}
+    manifest = f'          image: "ghcr.io/example/api@sha256:{old_digest}"  # api image\n'
+    rendered = factory._render_image(
+        manifest, target, f"ghcr.io/example/api@sha256:{new_digest}"
+    )
+    assert rendered == f'          image: "ghcr.io/example/api@sha256:{new_digest}"  # api image\n'
+
+    deployment = """spec:
+  template:
+    metadata:
+      labels:
+        app: api
+      annotations:
+        prometheus.io/scrape: "true"
+    spec: {}
+"""
+    restarted = factory._render_restart(deployment, "request-1")
+    assert restarted.count("annotations:") == 1
+    assert 'sentinel.dev/restartedAt: "request-1"' in restarted
+    assert 'prometheus.io/scrape: "true"' in restarted
+
+
+def test_access_pr_accepts_hujson_comments_and_trailing_commas() -> None:
+    factory = GitOpsPullRequestFactory(_access_settings())
+    draft = factory.access_change(
+        _request(), {"action": "grant", "user": "alice@example.com", "role": "dev"}
+    )
+    policy = r"""{
+      // managed roles
+      "groups": {
+        "group:gui-users": [],
+        "group:dev": [],
+        "group:operator": [],
+        "group:admin": [],
+      },
+      "grants": [],
+    }
+    """
+    rendered_text = draft.mutations[1].render(policy)
+    assert "// managed roles" in rendered_text
+    import hjson
+
+    rendered = hjson.loads(rendered_text)
+    assert rendered["groups"]["group:dev"] == ["alice@example.com"]
+
+
+def test_access_sync_cli_does_not_require_tailscale_policy_for_argocd_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentinel.access import sync as access_sync_module
+
+    access = tmp_path / "access"
+    access.mkdir()
+    (access / "users.yaml").write_text("users: []\n", encoding="utf-8")
+    (access / "roles.yaml").write_text("roles: {}\n", encoding="utf-8")
+    output = tmp_path / "policy.csv"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sentinel-access-sync", "--access-dir", str(access), "--argocd-policy-out", str(output)],
+    )
+    access_sync_module.main()
+    assert output.read_text(encoding="utf-8") == "\n"

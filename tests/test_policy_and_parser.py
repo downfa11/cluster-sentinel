@@ -267,7 +267,7 @@ def test_access_grant_requires_role() -> None:
         make_request({Role.ADMIN}), "github_create_grant_pr", {"user": "alice@example.com"}
     )
     assert not result.ok
-    assert "requires role" in result.message
+    assert "role" in result.message
 
 
 def test_slack_alert_format_includes_severity_title_and_body() -> None:

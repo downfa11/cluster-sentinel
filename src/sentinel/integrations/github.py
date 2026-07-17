@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
+import hjson
+
 from sentinel.config import Settings
 from sentinel.models import OperationRequest, ToolResult
 
@@ -284,8 +286,16 @@ class GitOpsPullRequestFactory:
         if current is None:
             raise RuntimeError(f"GitOps manifest does not exist: {target['path']}")
         repository = re.escape(target["repository"])
-        pattern = re.compile(rf"(?m)^(\s*image:\s*){repository}@sha256:[0-9a-f]{{64}}\s*$")
-        rendered, count = pattern.subn(rf"\g<1>{image}", current)
+        pattern = re.compile(
+            rf"(?m)^(\s*image:\s*)(?P<quote>['\"]?){repository}"
+            rf"@sha256:[0-9a-f]{{64}}(?P=quote)(?P<suffix>\s*(?:#.*)?)$"
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            quote = match.group("quote")
+            return f"{match.group(1)}{quote}{image}{quote}{match.group('suffix')}"
+
+        rendered, count = pattern.subn(replace, current)
         if count != 1:
             raise RuntimeError(
                 f"expected exactly one digest-pinned image for {target['repository']}, found {count}"
@@ -299,6 +309,11 @@ class GitOpsPullRequestFactory:
         existing = re.compile(rf"(?m)^(\s*){re.escape(annotation)}:\s*.*$")
         if existing.search(current):
             return existing.sub(rf'\g<1>{annotation}: "{request_id}"', current, count=1)
+        annotations = re.compile(r"(?m)^(\s{6}annotations:\s*(?:#.*)?)$")
+        if annotations.search(current):
+            return annotations.sub(
+                rf'\1\n        {annotation}: "{request_id}"', current, count=1
+            )
         marker = re.compile(r"(?m)^(\s{6}labels:\s*.*)$")
         rendered, count = marker.subn(
             rf'\1\n      annotations:\n        {annotation}: "{request_id}"', current, count=1
@@ -343,9 +358,9 @@ class GitOpsPullRequestFactory:
         if not current or not current.strip():
             raise RuntimeError("external/tailscale/policy.hujson does not exist or is empty")
         try:
-            policy = json.loads(current)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("external/tailscale/policy.hujson must be valid JSON") from exc
+            policy = hjson.loads(current)
+        except ValueError as exc:
+            raise RuntimeError("external/tailscale/policy.hujson must be valid HuJSON") from exc
         groups = policy.get("groups")
         if not isinstance(groups, dict):
             raise RuntimeError("Tailscale policy must contain a groups mapping")
@@ -357,17 +372,80 @@ class GitOpsPullRequestFactory:
         if set(role_groups) != _ACCESS_ROLES or any(not value for value in role_groups.values()):
             raise RuntimeError("SENTINEL_ACCESS_ROLE_GROUPS must map every access role")
         email = str(args["user"]).strip()
+        desired: dict[str, list[str]] = {}
         for group_name in role_groups.values():
             members = groups.get(group_name)
             if not isinstance(members, list):
                 raise RuntimeError(f"managed Tailscale group is missing: {group_name}")
-            groups[group_name] = sorted({str(member) for member in members if member != email})
+            desired[group_name] = sorted(
+                {str(member) for member in members if member != email}
+            )
         action = str(args["action"])
         if action != "offboard":
             role = "gui-user" if action == "revoke" else self._role(args.get("role") or "gui-user")
             group_name = role_groups[role]
-            groups[group_name] = sorted({*groups[group_name], email})
-        return json.dumps(policy, indent=2, ensure_ascii=False) + "\n"
+            desired[group_name] = sorted({*desired[group_name], email})
+
+        rendered = current
+        for group_name, members in desired.items():
+            rendered = self._replace_hujson_group(rendered, group_name, members)
+        return rendered if rendered.endswith("\n") else rendered + "\n"
+
+    def _replace_hujson_group(
+        self, current: str, group_name: str, members: list[str]
+    ) -> str:
+        key = re.escape(json.dumps(group_name))
+        match = re.search(rf"(?P<indent>[ \t]*){key}\s*:\s*\[", current)
+        if not match:
+            raise RuntimeError(f"managed Tailscale group is missing from HuJSON: {group_name}")
+        start = match.end() - 1
+        end = self._hujson_array_end(current, start)
+        inner = current[start + 1 : end]
+        comments = re.findall(r"//[^\r\n]*|/\*.*?\*/", inner, flags=re.DOTALL)
+        multiline = "\n" in inner or bool(comments)
+        if multiline:
+            item_indent = match.group("indent") + "  "
+            lines = [f"{item_indent}{comment.strip()}" for comment in comments]
+            lines.extend(f"{item_indent}{json.dumps(member)}," for member in members)
+            replacement = "\n" + "\n".join(lines) + "\n" + match.group("indent")
+        else:
+            replacement = ", ".join(json.dumps(member) for member in members)
+        return current[: start + 1] + replacement + current[end:]
+
+    def _hujson_array_end(self, current: str, start: int) -> int:
+        quote: str | None = None
+        escaped = False
+        line_comment = False
+        block_comment = False
+        index = start + 1
+        while index < len(current):
+            char = current[index]
+            following = current[index + 1] if index + 1 < len(current) else ""
+            if line_comment:
+                line_comment = char not in "\r\n"
+            elif block_comment:
+                if char == "*" and following == "/":
+                    block_comment = False
+                    index += 1
+            elif quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+            elif char in {"'", '"'}:
+                quote = char
+            elif char == "/" and following == "/":
+                line_comment = True
+                index += 1
+            elif char == "/" and following == "*":
+                block_comment = True
+                index += 1
+            elif char == "]":
+                return index
+            index += 1
+        raise RuntimeError("unterminated managed Tailscale group array")
 
     def _find_or_create_user(
         self, users: list[Any], identifier: str, action: str
