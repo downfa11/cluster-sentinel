@@ -6,6 +6,12 @@ from typing import Any
 
 from sentinel.config import Settings
 from sentinel.runtime import SentinelRuntime
+from sentinel.slack.messages import (
+    OnboardingMessage,
+    instruction_message,
+    onboarding_message,
+    result_message,
+)
 
 
 class SentinelSlackBot:
@@ -80,17 +86,14 @@ class SentinelSlackBot:
             if channel_id != self.settings.slack_onboarding_channel_id:
                 respond(
                     response_type="ephemeral",
-                    text="이 명령은 지정된 Sentinel 온보딩 채널에서만 사용할 수 있습니다.",
+                    **instruction_message("wrong_channel"),
                 )
                 return
             if len(email.split()) != 1 or "@" not in email:
-                respond(
-                    response_type="ephemeral",
-                    text="사용법: `/onboarding tailscale-account@example.com`",
-                )
+                respond(response_type="ephemeral", **instruction_message("usage"))
                 return
             result = self.runtime.handle_onboarding(slack_user_id, channel_id, email)
-            respond(response_type="ephemeral", text=self.runtime.format_result(result))
+            respond(response_type="ephemeral", **result_message(result))
             self._post_onboarding_result(client, slack_user_id, result)
 
     def _handle_member_join(
@@ -113,23 +116,17 @@ class SentinelSlackBot:
             return
         status = self.runtime.onboarding_status(user_id, channel_id)
         state = str(status.data.get("onboarding_status", "error"))
+        kind: OnboardingMessage
         if state == "already_registered":
-            text = f"<@{user_id}>님, 이미 Sentinel 온보딩이 완료되어 있습니다. 환영합니다!"
+            kind = "join_registered"
             reaction = self.SUCCESS_REACTION
         elif state == "unregistered":
-            text = (
-                f"<@{user_id}>님, 환영합니다! 이 스레드에서 "
-                "`/onboarding 본인의-Tailscale-이메일`을 실행해 등록을 요청해 주세요. "
-                "Slack 이메일과 달라도 괜찮습니다."
-            )
+            kind = "join_unregistered"
             reaction = self.ONBOARDING_REACTION
         else:
-            text = (
-                f"<@{user_id}>님, 환영합니다! 현재 등록 상태를 확인하지 못했습니다. "
-                "잠시 후 `/onboarding 본인의-Tailscale-이메일`을 실행해 주세요."
-            )
+            kind = "join_lookup_failed"
             reaction = self.FAILURE_REACTION
-        timestamp = self._post_welcome_reply(client, text)
+        timestamp = self._post_welcome_reply(client, onboarding_message(kind, user_id))
         if not timestamp:
             return
         self._reaction(client, "add", reaction, channel_id, timestamp)
@@ -137,19 +134,20 @@ class SentinelSlackBot:
 
     def _post_onboarding_result(self, client: Any, user_id: str, result: Any) -> None:
         state = str(result.data.get("onboarding_status", "error"))
-        messages = {
-            "created": f"<@{user_id}>님의 온보딩 draft PR이 생성되었습니다. 검토와 병합을 기다립니다.",
-            "pending": f"<@{user_id}>님의 온보딩 요청은 이미 검토 중입니다.",
-            "already_registered": f"<@{user_id}>님은 이미 온보딩이 완료되어 있습니다.",
-        }
         reactions = {
             "created": self.CREATED_REACTION,
             "pending": self.PENDING_REACTION,
             "already_registered": self.SUCCESS_REACTION,
         }
+        result_kinds: dict[str, OnboardingMessage] = {
+            "created": "created",
+            "pending": "pending",
+            "already_registered": "already_registered",
+        }
+        kind = result_kinds.get(state, "failed")
         timestamp = self._post_welcome_reply(
             client,
-            messages.get(state, f"<@{user_id}>님의 온보딩 요청을 처리하지 못했습니다."),
+            onboarding_message(kind, user_id),
         )
         self._reaction(
             client,
@@ -159,13 +157,13 @@ class SentinelSlackBot:
             timestamp,
         )
 
-    def _post_welcome_reply(self, client: Any, text: str) -> str:
+    def _post_welcome_reply(self, client: Any, payload: dict[str, Any]) -> str:
         channel_id = self.settings.slack_onboarding_channel_id
         thread_ts = self.settings.slack_welcome_thread_ts
         if not channel_id or not thread_ts:
             return ""
         try:
-            response = client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=text)
+            response = client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, **payload)
             return str(response.get("ts", ""))
         except Exception:
             return ""
@@ -192,7 +190,7 @@ class SentinelSlackBot:
                 slack_user_id=str(event.get("user", "")),
                 channel_id=channel_id,
             )
-            say(self.runtime.format_result(result))
+            say(**result_message(result))
         except Exception:
             self._reaction(client, "remove", self.LOADING_REACTION, channel_id, timestamp)
             self._reaction(client, "add", self.FAILURE_REACTION, channel_id, timestamp)

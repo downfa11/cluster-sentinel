@@ -13,3 +13,17 @@ Tool calls are authorized again after service and environment are resolved from 
 Replies contain the actual PR URL, Argo CD resources/applications/Pod logs, Grafana alert summaries, or a denial reason. Multiple read-tool results are joined instead of being reduced to a count.
 
 Reaction status requires the Slack bot scope reactions:write. Requests receive hourglass_flowing_sand while processing, then white_check_mark on success or x on denial/failure. Reaction API failures never suppress the text response.
+
+## Message layout
+
+Interactive Sentinel messages use one Block Kit contract rather than legacy attachments:
+
+- a plain-text header identifies the status and feature;
+- a mrkdwn section contains the escaped message body;
+- pull requests use a button instead of a bare preview card;
+- link and media unfurls are disabled;
+- top-level fallback text disables mrkdwn parsing;
+- database metadata is rendered as fields and the table remains in code blocks.
+
+Database tables are split across section blocks below Slack's 3,000-character block limit. The
+fallback contains only the row summary, avoiding a second copy of a potentially large result.

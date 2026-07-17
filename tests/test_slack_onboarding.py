@@ -33,10 +33,10 @@ class _Runtime:
 
 class _Client:
     def __init__(self) -> None:
-        self.messages: list[dict[str, str]] = []
+        self.messages: list[dict[str, Any]] = []
         self.reactions: list[tuple[str, str, str]] = []
 
-    def chat_postMessage(self, **kwargs: str) -> dict[str, str]:
+    def chat_postMessage(self, **kwargs: Any) -> dict[str, str]:
         self.messages.append(kwargs)
         return {"ts": f"reply-{len(self.messages)}"}
 
@@ -71,6 +71,8 @@ def test_new_member_gets_onboarding_instruction_in_fixed_thread() -> None:
     assert client.messages[0]["thread_ts"] == "100.200"
     assert "/onboarding" in client.messages[0]["text"]
     assert "Tailscale" in client.messages[0]["text"]
+    assert client.messages[0]["blocks"][0]["type"] == "header"
+    assert client.messages[0]["unfurl_links"] is False
     assert client.reactions == [("wave", "C-ONBOARD", "reply-1")]
 
 
@@ -145,7 +147,7 @@ def test_slash_handler_acknowledges_and_calls_runtime() -> None:
     bot.app = _App()  # type: ignore[assignment]
     bot._register_handlers()
     acknowledgements: list[bool] = []
-    responses: list[dict[str, str]] = []
+    responses: list[dict[str, Any]] = []
     client = _Client()
 
     handlers["/onboarding"](
@@ -161,4 +163,8 @@ def test_slash_handler_acknowledges_and_calls_runtime() -> None:
 
     assert acknowledgements == [True]
     assert runtime.onboarding_calls == [("U-NEW", "C-ONBOARD", "tailscale@example.com")]
-    assert responses == [{"response_type": "ephemeral", "text": "created"}]
+    assert responses[0]["response_type"] == "ephemeral"
+    assert responses[0]["text"] == "✅ Sentinel · 완료: created"
+    assert responses[0]["blocks"][0]["text"]["text"] == "✅ Sentinel · 완료"
+    assert responses[0]["unfurl_links"] is False
+    assert responses[0]["unfurl_media"] is False
