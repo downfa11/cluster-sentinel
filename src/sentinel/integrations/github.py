@@ -76,10 +76,21 @@ class GitHubClient:
             base_ref = client.get(f"{base_url}/git/ref/heads/{self.settings.github_default_branch}")
             base_ref.raise_for_status()
             sha = base_ref.json()["object"]["sha"]
-            created = client.post(
-                f"{base_url}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha}
-            )
-            created.raise_for_status()
+            branch_ref = client.get(f"{base_url}/git/ref/heads/{branch}")
+            if branch_ref.status_code == 200:
+                reset = client.patch(
+                    f"{base_url}/git/refs/heads/{branch}",
+                    json={"sha": sha, "force": True},
+                )
+                reset.raise_for_status()
+            elif branch_ref.status_code == 404:
+                created = client.post(
+                    f"{base_url}/git/refs",
+                    json={"ref": f"refs/heads/{branch}", "sha": sha},
+                )
+                created.raise_for_status()
+            else:
+                branch_ref.raise_for_status()
 
             try:
                 commit_message = (
@@ -272,7 +283,10 @@ class GitOpsPullRequestFactory:
         for item in users:
             if not isinstance(item, dict):
                 continue
-            ids = {str(item.get(key) or "") for key in ("id", "email", "slack", "github")}
+            ids = {
+                str(item.get(key) or "")
+                for key in ("id", "email", "slack_user_id", "slack", "github")
+            }
             if identifier in ids:
                 return {str(key): str(value) for key, value in item.items() if value is not None}
         return None
@@ -387,7 +401,8 @@ class GitOpsPullRequestFactory:
         if args.get("github") or args.get("github_username"):
             user["github"] = str(args.get("github") or args.get("github_username"))
         if args.get("slack") or args.get("slack_user_id"):
-            user["slack"] = str(args.get("slack") or args.get("slack_user_id"))
+            user["slack_user_id"] = str(args.get("slack_user_id") or args.get("slack"))
+            user.pop("slack", None)
         return self._dump_yaml(values)
 
     def _render_tailscale_policy(self, current: str | None, args: dict[str, Any]) -> str:
@@ -485,7 +500,10 @@ class GitOpsPullRequestFactory:
         for item in users:
             if not isinstance(item, dict):
                 continue
-            ids = {str(item.get(key) or "") for key in ("id", "email", "slack", "github")}
+            ids = {
+                str(item.get(key) or "")
+                for key in ("id", "email", "slack_user_id", "slack", "github")
+            }
             if identifier in ids:
                 return item
         if action != "onboard":

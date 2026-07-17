@@ -77,7 +77,7 @@ def test_onboarding_creates_gui_user_draft_with_deterministic_key() -> None:
     assert drafts[0].idempotency_key
     rendered = drafts[0].mutations[0].render("users: []\n")
     assert "role: gui-user" in rendered
-    assert "slack: U-NEW" in rendered
+    assert "slack_user_id: U-NEW" in rendered
     assert "email: tailscale.user@example.com" in rendered
 
 
@@ -96,6 +96,25 @@ def test_existing_slack_mapping_does_not_create_duplicate_pr() -> None:
 
     assert result.ok
     assert result.data["onboarding_status"] == "already_registered"
+    assert drafts == []
+
+
+def test_canonical_slack_identity_is_matched_and_conflicts_are_rejected() -> None:
+    users = """users:
+  - id: known
+    email: known@example.com
+    slack_user_id: U-KNOWN
+    role: gui-user
+    status: active
+"""
+    runtime, drafts = _runtime(users)
+
+    registered = runtime.handle_onboarding("U-KNOWN", "C-ONBOARD", "known@example.com")
+    conflict = runtime.handle_onboarding("U-OTHER", "C-ONBOARD", "known@example.com")
+
+    assert registered.ok
+    assert registered.data["onboarding_status"] == "already_registered"
+    assert not conflict.ok
     assert drafts == []
 
 

@@ -182,7 +182,7 @@ def test_access_onboard_and_lookup_use_current_keys() -> None:
     rendered = draft.mutations[0].render("users: []\n")
     assert "id: bob" in rendered
     assert "github: bob-gh" in rendered
-    assert "slack: U2" in rendered
+    assert "slack_user_id: U2" in rendered
     assert factory.find_access_user(rendered, "U2") == {
         "id": "bob",
         "name": "Bob",
@@ -190,7 +190,7 @@ def test_access_onboard_and_lookup_use_current_keys() -> None:
         "role": "gui-user",
         "status": "active",
         "github": "bob-gh",
-        "slack": "U2",
+        "slack_user_id": "U2",
     }
 
 

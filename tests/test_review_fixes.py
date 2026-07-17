@@ -163,8 +163,9 @@ class _FakeResponse:
 
 
 class _FakeHttpClient:
-    def __init__(self, fail_put: bool = False) -> None:
+    def __init__(self, fail_put: bool = False, stale_branch: bool = False) -> None:
         self.fail_put = fail_put
+        self.stale_branch = stale_branch
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
     def __enter__(self) -> "_FakeHttpClient":
@@ -175,8 +176,13 @@ class _FakeHttpClient:
 
     def get(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append(("GET", url, kwargs))
-        if "/git/ref/heads/" in url:
+        if url.endswith("/git/ref/heads/main"):
             return _FakeResponse(payload={"object": {"sha": "base-sha"}})
+        if "/git/ref/heads/" in url:
+            return _FakeResponse(
+                status=200 if self.stale_branch else 404,
+                payload={"object": {"sha": "stale-sha"}},
+            )
         content = base64.b64encode(b"old\n").decode()
         return _FakeResponse(payload={"sha": "file-sha", "content": content})
 
@@ -185,6 +191,10 @@ class _FakeHttpClient:
         if url.endswith("/pulls"):
             return _FakeResponse(payload={"html_url": "https://example.test/pr/1"})
         return _FakeResponse(status=201)
+
+    def patch(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self.calls.append(("PATCH", url, kwargs))
+        return _FakeResponse(status=200)
 
     def put(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append(("PUT", url, kwargs))
@@ -220,6 +230,35 @@ def test_live_github_pr_is_draft_signed_off_and_cleans_failed_branch() -> None:
     with pytest.raises(RuntimeError, match="HTTP 500"):
         client.create_pr(_request(), draft)
     assert any(call[0] == "DELETE" and "/git/refs/heads/" in call[1] for call in failed.calls)
+
+
+def test_live_github_pr_resets_stale_deterministic_branch() -> None:
+    settings = _access_settings(
+        github_token="token",
+        github_pr_dry_run=False,
+        github_commit_signoff="Sentinel <sentinel@example.com>",
+        gitops_repo="owner/repo",
+    )
+    draft = PullRequestDraft(
+        "access-onboard",
+        "access: onboard user@example.com",
+        "body",
+        [FileMutation("file.yaml", lambda _old: "new\n")],
+        "deterministic",
+    )
+    client = GitHubClient(settings)
+    http = _FakeHttpClient(stale_branch=True)
+    client._http_client = lambda: http  # type: ignore[method-assign]
+
+    result = client.create_pr(_request(), draft)
+
+    assert result.ok
+    reset = next(call for call in http.calls if call[0] == "PATCH")
+    assert reset[1].endswith("/git/refs/heads/fix/sentinel-access-onboard-deterministic")
+    assert reset[2]["json"] == {"sha": "base-sha", "force": True}
+    assert not any(
+        call[0] == "POST" and call[1].endswith("/git/refs") for call in http.calls
+    )
 
 
 class _FakeArgo(ArgoCdClient):
