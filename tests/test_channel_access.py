@@ -146,8 +146,16 @@ def test_onboarding_is_rejected_outside_configured_channel() -> None:
 class _Response:
     status_code = 200
 
-    def json(self) -> list[dict[str, str]]:
-        return [{"html_url": "https://example.test/pr/7"}]
+    def json(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "html_url": "https://example.test/pr/7",
+                "head": {
+                    "ref": "fix/sentinel-access-onboard-abc123-existing",
+                    "repo": {"owner": {"login": "owner"}},
+                },
+            }
+        ]
 
     def raise_for_status(self) -> None:
         return None
@@ -189,5 +197,5 @@ def test_existing_deterministic_onboarding_pr_is_reused() -> None:
     assert result.ok
     assert result.data["already_pending"] is True
     assert result.data["pull_request_url"] == "https://example.test/pr/7"
-    assert http.get_calls[0][1]["params"]["head"] == "owner:fix/sentinel-access-onboard-abc123"
+    assert http.get_calls[0][1]["params"] == {"state": "open", "base": "main", "per_page": 100}
     assert not http.write_called

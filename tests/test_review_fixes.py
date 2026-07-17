@@ -150,7 +150,7 @@ def test_operational_environment_is_server_side_and_cannot_be_spoofed() -> None:
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, payload: dict[str, Any] | None = None) -> None:
+    def __init__(self, status: int = 200, payload: Any = None) -> None:
         self.status_code = status
         self._payload = payload or {}
 
@@ -163,9 +163,8 @@ class _FakeResponse:
 
 
 class _FakeHttpClient:
-    def __init__(self, fail_put: bool = False, stale_branch: bool = False) -> None:
+    def __init__(self, fail_put: bool = False) -> None:
         self.fail_put = fail_put
-        self.stale_branch = stale_branch
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
     def __enter__(self) -> "_FakeHttpClient":
@@ -176,13 +175,10 @@ class _FakeHttpClient:
 
     def get(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append(("GET", url, kwargs))
+        if url.endswith("/pulls"):
+            return _FakeResponse(payload=[])
         if url.endswith("/git/ref/heads/main"):
             return _FakeResponse(payload={"object": {"sha": "base-sha"}})
-        if "/git/ref/heads/" in url:
-            return _FakeResponse(
-                status=200 if self.stale_branch else 404,
-                payload={"object": {"sha": "stale-sha"}},
-            )
         content = base64.b64encode(b"old\n").decode()
         return _FakeResponse(payload={"sha": "file-sha", "content": content})
 
@@ -191,10 +187,6 @@ class _FakeHttpClient:
         if url.endswith("/pulls"):
             return _FakeResponse(payload={"html_url": "https://example.test/pr/1"})
         return _FakeResponse(status=201)
-
-    def patch(self, url: str, **kwargs: Any) -> _FakeResponse:
-        self.calls.append(("PATCH", url, kwargs))
-        return _FakeResponse(status=200)
 
     def put(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append(("PUT", url, kwargs))
@@ -232,7 +224,7 @@ def test_live_github_pr_is_draft_signed_off_and_cleans_failed_branch() -> None:
     assert any(call[0] == "DELETE" and "/git/refs/heads/" in call[1] for call in failed.calls)
 
 
-def test_live_github_pr_resets_stale_deterministic_branch() -> None:
+def test_live_github_pr_uses_unique_branch_without_resetting_stale_branch() -> None:
     settings = _access_settings(
         github_token="token",
         github_pr_dry_run=False,
@@ -247,18 +239,30 @@ def test_live_github_pr_resets_stale_deterministic_branch() -> None:
         "deterministic",
     )
     client = GitHubClient(settings)
-    http = _FakeHttpClient(stale_branch=True)
-    client._http_client = lambda: http  # type: ignore[method-assign]
+    first = _FakeHttpClient()
+    client._http_client = lambda: first  # type: ignore[method-assign]
+    first_result = client.create_pr(_request(), draft)
 
-    result = client.create_pr(_request(), draft)
+    second = _FakeHttpClient()
+    client._http_client = lambda: second  # type: ignore[method-assign]
+    second_result = client.create_pr(_request(), draft)
 
-    assert result.ok
-    reset = next(call for call in http.calls if call[0] == "PATCH")
-    assert reset[1].endswith("/git/refs/heads/fix/sentinel-access-onboard-deterministic")
-    assert reset[2]["json"] == {"sha": "base-sha", "force": True}
-    assert not any(
-        call[0] == "POST" and call[1].endswith("/git/refs") for call in http.calls
+    assert first_result.ok and second_result.ok
+    first_ref = next(
+        call[2]["json"]["ref"]
+        for call in first.calls
+        if call[0] == "POST" and call[1].endswith("/git/refs")
     )
+    second_ref = next(
+        call[2]["json"]["ref"]
+        for call in second.calls
+        if call[0] == "POST" and call[1].endswith("/git/refs")
+    )
+    prefix = "refs/heads/fix/sentinel-access-onboard-deterministic-"
+    assert first_ref.startswith(prefix)
+    assert second_ref.startswith(prefix)
+    assert first_ref != second_ref
+    assert not any(call[0] == "PATCH" for call in first.calls + second.calls)
 
 
 class _FakeArgo(ArgoCdClient):
@@ -339,7 +343,11 @@ def test_deployment_pr_rejects_environment_mismatch() -> None:
         }
     )
     registry = ToolRegistry(
-        PolicyEngine(), GitHubClient(settings), AuditLogger(), _CapturingArgo(), GrafanaClient(settings)
+        PolicyEngine(),
+        GitHubClient(settings),
+        AuditLogger(),
+        _CapturingArgo(),
+        GrafanaClient(settings),
     )
     result = registry.execute(
         _request(),
@@ -356,7 +364,11 @@ def test_deployment_pr_rejects_environment_mismatch() -> None:
 
 def test_access_tool_schemas_require_role() -> None:
     registry = ToolRegistry(
-        PolicyEngine(), GitHubClient(Settings()), AuditLogger(), _CapturingArgo(), GrafanaClient(Settings())
+        PolicyEngine(),
+        GitHubClient(Settings()),
+        AuditLogger(),
+        _CapturingArgo(),
+        GrafanaClient(Settings()),
     )
     schemas = {schema["name"]: schema for schema in registry.schemas}
     for name in ("github_create_grant_pr", "github_create_revoke_pr"):
@@ -369,9 +381,7 @@ def test_manifest_mutations_preserve_quotes_comments_and_existing_annotations() 
     new_digest = "b" * 64
     target = {"path": "deployment.yaml", "repository": "ghcr.io/example/api"}
     manifest = f'          image: "ghcr.io/example/api@sha256:{old_digest}"  # api image\n'
-    rendered = factory._render_image(
-        manifest, target, f"ghcr.io/example/api@sha256:{new_digest}"
-    )
+    rendered = factory._render_image(manifest, target, f"ghcr.io/example/api@sha256:{new_digest}")
     assert rendered == f'          image: "ghcr.io/example/api@sha256:{new_digest}"  # api image\n'
 
     deployment = """spec:
