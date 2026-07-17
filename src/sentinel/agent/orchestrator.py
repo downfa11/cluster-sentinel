@@ -85,6 +85,12 @@ class AgentOrchestrator:
                 continue
             break
 
+        if any(item.name == "db_get_schema" for item in selected) and not any(
+            item.name == "db_query_readonly" for item in selected
+        ):
+            return ToolResult(
+                False, "schema lookup did not produce a read-only query; refusing to execute"
+            )
         if tool_results:
             return self._summarize_tool_results(tool_results)
         return ToolResult(False, "LLM did not select an MCP tool")

@@ -13,6 +13,7 @@ from sentinel.audit import AuditLogger
 from sentinel.config import Settings
 from sentinel.database import (
     MAX_SLACK_BYTES,
+    MAX_SLACK_CHARACTERS,
     DatabaseService,
     render_slack_table,
     validate_readonly_sql,
@@ -198,6 +199,9 @@ def test_readonly_validator_rejects_write_and_management_sql(sql: str) -> None:
         "SELECT @@global.max_connections",
         "SELECT GET_LOCK('sentinel', 1)",
         "SELECT * FROM other_catalog.commerce.orders",
+        "SELECT mutate_orders()",
+        "SELECT commerce.mutate_orders()",
+        "SELECT commerce.CRC32(payload)",
     ],
 )
 def test_readonly_validator_rejects_multiple_cross_database_and_unsafe_functions(
@@ -402,11 +406,22 @@ def test_slack_table_honors_row_and_byte_limits() -> None:
     assert truncated or displayed == 50
 
 
+def test_slack_table_honors_slack_character_limit() -> None:
+    columns = [f"column_{index}" for index in range(20)]
+    rows = [{column: ("x" * 80) for column in columns} for _ in range(50)]
+    rendered, displayed, truncated = render_slack_table(columns, rows)
+    assert displayed < 50
+    assert truncated
+    assert len(rendered) <= MAX_SLACK_CHARACTERS
+    assert len(rendered.encode("utf-8")) <= MAX_SLACK_BYTES
+
+
 def test_slack_table_truncates_oversized_headers_within_byte_limit() -> None:
     columns = [f"{index}-" + ("alias" * 100) for index in range(2000)]
     rendered, displayed, truncated = render_slack_table(columns, [])
     assert displayed == 0
     assert truncated
+    assert len(rendered) <= MAX_SLACK_CHARACTERS
     assert len(rendered.encode("utf-8")) <= MAX_SLACK_BYTES
 
 
@@ -602,4 +617,32 @@ def test_orchestrator_rejects_schema_query_database_mismatch() -> None:
 
     assert not result.ok
     assert "same database" in result.message
+    assert mcp.calls == ["db_get_schema"]
+
+
+class SchemaWithoutQueryResponses(SequencedDatabaseResponses):
+    def create(self, **kwargs: object) -> object:
+        self.inputs.append(kwargs.get("input"))
+        if len(self.inputs) == 1:
+            output = [
+                FakeFunctionCall(
+                    "db_get_schema",
+                    '{"database":"commerce","reason":"find order columns"}',
+                )
+            ]
+        else:
+            output = []
+        return type("Response", (), {"output": output})()
+
+
+def test_orchestrator_fails_when_schema_is_not_followed_by_query() -> None:
+    mcp = FakeDatabaseMcp()
+    orchestrator = AgentOrchestrator(Settings(openai_api_key="synthetic-key"), mcp)
+    responses = SchemaWithoutQueryResponses()
+    orchestrator.client = type("Client", (), {"responses": responses})()
+
+    result = orchestrator.handle(request_for(Role.ADMIN))
+
+    assert not result.ok
+    assert "did not produce" in result.message
     assert mcp.calls == ["db_get_schema"]

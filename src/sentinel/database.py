@@ -21,11 +21,14 @@ MAX_QUERY_ROWS = 200
 DEFAULT_QUERY_ROWS = 100
 MAX_SLACK_ROWS = 50
 MAX_SLACK_BYTES = 64 * 1024
+MAX_SLACK_CHARACTERS = 40_000
 QUERY_TIMEOUT_SECONDS = 5
 READ_ROUTER_HOST = "home-mysql.mysql-prod.svc.cluster.local"
 MAX_SCHEMA_ROWS = 2000
 MAX_CELL_CHARACTERS = 80
 MAX_RESULT_BUFFER_BYTES = MAX_SLACK_BYTES - 512
+MAX_RESULT_CHARACTERS = MAX_SLACK_CHARACTERS - 512
+ALLOWED_ANONYMOUS_FUNCTIONS = frozenset({"CRC32", "INET_ATON", "INET_NTOA"})
 READ_CREDENTIAL_ENVS = {
     "commerce": ("SENTINEL_COMMERCE_DB_USERNAME", "SENTINEL_COMMERCE_DB_PASSWORD"),
     "wargame": ("SENTINEL_WARGAME_DB_USERNAME", "SENTINEL_WARGAME_DB_PASSWORD"),
@@ -154,6 +157,11 @@ def validate_readonly_sql(
             if function_name.upper() in BLOCKED_FUNCTIONS:
                 raise ValueError(f"blocked SQL function: {function_name.upper()}")
 
+            if isinstance(node, exp.Anonymous) and (
+                isinstance(node.parent, exp.Dot)
+                or function_name.upper() not in ALLOWED_ANONYMOUS_FUNCTIONS
+            ):
+                raise ValueError(f"unapproved SQL function: {function_name.upper()}")
     for column in statement.find_all(exp.Column):
         if _is_sensitive_column(column.name):
             raise ValueError("sensitive columns are not allowed")
@@ -515,7 +523,7 @@ def render_slack_table(columns: list[str], rows: list[dict[str, Any]]) -> tuple[
                 "```",
             ]
         )
-        if len(base.encode("utf-8")) > MAX_RESULT_BUFFER_BYTES:
+        if len(base.encode("utf-8")) > MAX_RESULT_BUFFER_BYTES or len(base) > MAX_RESULT_CHARACTERS:
             size_truncated = True
             break
         selected_indexes = candidate_indexes
@@ -534,7 +542,10 @@ def render_slack_table(columns: list[str], rows: list[dict[str, Any]]) -> tuple[
     displayed = 0
     for row in selected_values:
         candidate = "\n".join([*output, line(row, widths), "```"])
-        if len(candidate.encode("utf-8")) > MAX_RESULT_BUFFER_BYTES:
+        if (
+            len(candidate.encode("utf-8")) > MAX_RESULT_BUFFER_BYTES
+            or len(candidate) > MAX_RESULT_CHARACTERS
+        ):
             size_truncated = True
             break
         output.append(line(row, widths))
