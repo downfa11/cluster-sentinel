@@ -5,7 +5,7 @@ Sentinel is an AI GitOps DevOps Agent for Slack.
 Users do not need to memorize slash commands. They can DM or mention Sentinel in natural language, and the LLM selects approved MCP-style tools. Write operations never mutate Kubernetes directly; they create GitHub pull requests that humans review and merge.
 
 ```text
-Slack natural language -> OpenAI Responses API -> MCP tool selection -> Policy Engine -> GitHub PR / Argo CD / Grafana
+Slack natural language -> Gemini or OpenAI -> MCP tool selection -> Policy Engine -> GitHub PR / Argo CD / Grafana
 ```
 
 ## Architecture
@@ -16,7 +16,7 @@ flowchart LR
     S --> R[Sentinel runtime]
     R --> I[Identity resolver]
     R --> A[Audit logger]
-    R --> L[OpenAI Responses API]
+    R --> L[Gemini Chat Completions / OpenAI Responses]
     L --> M[MCP-style tool gateway]
     M --> P[Policy Engine]
     P -->|allow| T[Tool registry]
@@ -37,7 +37,7 @@ sequenceDiagram
     participant User as Slack user
     participant Slack as Slack
     participant Sentinel as Sentinel runtime
-    participant LLM as OpenAI Responses API
+    participant LLM as Gemini or OpenAI
     participant Policy as Policy Engine
     participant Tool as MCP tool
     participant GitHub as GitHub
@@ -69,7 +69,7 @@ sequenceDiagram
 
 - Slack Socket Mode bot
 - Slack DM and bot mention handling
-- OpenAI Responses API tool calling
+- Gemini Chat Completions and OpenAI Responses API tool calling
 - In-process MCP-style tool gateway
 - Policy checks before every tool call
 - GitHub PR creation for deploy, restart, rollback, and access source-of-truth changes
@@ -136,6 +136,8 @@ Required environment variables:
 
 ```bash
 SENTINEL_OPENAI_API_KEY=...
+SENTINEL_GEMINI_API_KEY=...
+SENTINEL_GEMINI_MODEL=gemini-3.5-flash
 SENTINEL_SLACK_BOT_TOKEN=xoxb-...
 SENTINEL_SLACK_APP_TOKEN=xapp-...
 SENTINEL_SLACK_SIGNING_SECRET=...
@@ -167,6 +169,8 @@ Dry-run PR mode is enabled by default. To create real PRs:
 ```bash
 SENTINEL_GITHUB_PR_DRY_RUN=false
 ```
+
+When both LLM keys are set, Sentinel prefers Gemini. OpenAI remains supported as a fallback provider.
 
 
 

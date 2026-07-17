@@ -19,7 +19,7 @@ Loki는 의도적으로 제외했습니다.
 
 ## 필수 런타임
 
-Sentinel은 `SENTINEL_OPENAI_API_KEY`가 필요합니다. 키가 없으면 tool을 추측해서 실행하지 않고 거절합니다.
+Sentinel은 `SENTINEL_GEMINI_API_KEY` 또는 `SENTINEL_OPENAI_API_KEY`가 필요하며, 둘 다 있으면 Gemini를 우선합니다. 두 키 모두 없으면 tool을 추측해서 실행하지 않고 거절합니다.
 
 ## GitOps 쓰기 방식
 
