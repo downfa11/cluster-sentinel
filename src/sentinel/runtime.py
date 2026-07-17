@@ -20,11 +20,9 @@ class SentinelRuntime:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.identity = IdentityResolver(settings)
-        readonly_channels = (
-            {settings.slack_onboarding_channel_id}
-            if settings.slack_onboarding_channel_id
-            else set()
-        )
+        readonly_channels = set(settings.slack_control_channels)
+        if settings.slack_onboarding_channel_id:
+            readonly_channels.add(settings.slack_onboarding_channel_id)
         self.policy = PolicyEngine(readonly_channels)
         self.audit = AuditLogger()
         self.github = GitHubClient(settings)
