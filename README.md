@@ -68,7 +68,7 @@ sequenceDiagram
 ## What Works Now
 
 - Slack Socket Mode bot
-- Slack bot mention handling; DMs are disabled by default
+- Slack bot mention handling with loading/success/failure reactions; DMs are disabled by default
 - Gemini Chat Completions and OpenAI Responses API tool calling
 - In-process MCP-style tool gateway
 - Policy checks before every tool call
