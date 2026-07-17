@@ -2,7 +2,7 @@
 
 Sentinel is an AI GitOps DevOps Agent for Slack.
 
-Users do not need to memorize slash commands. They can DM or mention Sentinel in natural language, and the LLM selects approved MCP-style tools. Write operations never mutate Kubernetes directly; they create GitHub pull requests that humans review and merge.
+Users do not need to memorize slash commands. They can mention Sentinel in a configured channel (or use explicitly enabled DMs) in natural language, and the LLM selects approved MCP-style tools. Write operations never mutate Kubernetes directly; they create GitHub pull requests that humans review and merge.
 
 ```text
 Slack natural language -> Gemini or OpenAI -> MCP tool selection -> Policy Engine -> GitHub PR / Argo CD / Grafana
@@ -52,7 +52,7 @@ sequenceDiagram
     alt write operation
         Policy-->>Sentinel: allowed
         Sentinel->>Tool: github_create_deploy_pr
-        Tool->>GitHub: create branch, patch values.yaml, open PR
+        Tool->>GitHub: create branch, patch the allowlisted manifest, open PR
         GitHub-->>Sentinel: PR URL
     else read operation
         Policy-->>Sentinel: allowed
@@ -68,14 +68,14 @@ sequenceDiagram
 ## What Works Now
 
 - Slack Socket Mode bot
-- Slack DM and bot mention handling
+- Slack bot mention handling with loading/success/failure reactions; DMs are disabled by default
 - Gemini Chat Completions and OpenAI Responses API tool calling
 - In-process MCP-style tool gateway
 - Policy checks before every tool call
 - GitHub PR creation for deploy, restart, rollback, and access source-of-truth changes
-- Deploy and rollback PRs patch Helm values files by updating `image.repository` and `image.tag`
-- Restart PRs patch `podAnnotations.sentinel.dev/restartedAt`
-- Argo CD API status and managed-resource reads
+- Deploy and rollback PRs replace one allowlisted digest-pinned image in a configured Deployment manifest
+- Restart PRs update `sentinel.dev/restartedAt` in the Deployment Pod template
+- Argo CD application, OutOfSync, status, managed-resource, Pod, and bounded Pod-log reads
 - Grafana API alert reads
 - JSON audit logs
 - Monitoring and alert messages to a configured Slack channel
@@ -91,7 +91,10 @@ You can DM Sentinel or mention it in a channel. Natural language is the only Sla
 | Restart | `api staging 재시작해줘` | `github_create_restart_pr` |
 | Rollback | `Rollback api in production to v1.2.2` | `github_create_rollback_pr` |
 | Argo CD status | `api production 상태 확인해줘` | `argocd_get_status` |
-| Argo CD resources | `Show managed resources for api staging` | `argocd_diff` |
+| Argo CD resources | `Show managed resources for commerce` | `argocd_diff` |
+| OutOfSync apps | `OutOfSync applications 보여줘` | `argocd_list_out_of_sync` |
+| Argo CD pods | `commerce pod 보여줘` | `argocd_list_pods` |
+| Argo CD logs | `commerce 최근 로그 보여줘` | `argocd_get_logs` |
 | Grafana alerts | `api 관련 Grafana alert 보여줘` | `grafana_alerts` |
 | Onboard | `alice@example.com 온보딩 PR 만들어줘` | `github_create_onboard_pr` |
 | Grant access | `alice@example.com에게 operator 권한 부여 PR 만들어줘` | `github_create_grant_pr` |
@@ -101,15 +104,7 @@ You can DM Sentinel or mention it in a channel. Natural language is the only Sla
 
 ## Access Automation Scope
 
-Onboarding, offboarding, grant, and revoke tools create reviewable PRs that patch `access/users.yaml`, the access source of truth. After those changes are merged, the `access-sync` GitHub Actions workflow runs `sentinel-access-sync` to apply the approved state:
-
-- sync GitHub team memberships through the GitHub API, including removals when `--sync-removals` is enabled
-- sync Grafana team memberships through the Grafana API, including removals when `--sync-removals` is enabled
-- render Tailscale ACL policy JSON and publish it through the Tailscale API when credentials are configured
-- generate Argo CD RBAC policy CSV for GitOps-managed Argo CD configuration
-
-This keeps the same safety model: the LLM creates PRs, humans approve, and automation applies the merged source-of-truth state after merge.
-
+Access tools create reviewable PRs that update both `access/users.yaml` and the managed role groups in `external/tailscale/policy.hujson`. The workflow in `cluster-config` renders the groups from `access/roles.yaml`, verifies the committed policy is identical, and only then publishes it to Tailscale. Unmanaged groups and all other policy fields are preserved.
 ## Safety Rules
 
 Sentinel does not expose tools for:
@@ -188,20 +183,9 @@ Test notification delivery:
 ```bash
 sentinel-slack-notify --severity warning --title "Sentinel test" --body "Slack alert channel is connected."
 ```
-## GitOps Path Convention
+## GitOps Target Convention
 
-By default deploy/restart/rollback tools patch:
-
-```text
-apps/{service}/overlays/{environment}/values.yaml
-```
-
-Override it with:
-
-```bash
-SENTINEL_GITOPS_DEPLOY_VALUES_PATH_TEMPLATE=apps/{service}/envs/{environment}/values.yaml
-```
-
+`SENTINEL_GITOPS_TARGETS` explicitly maps each writable service to a Deployment manifest path, image repository, Argo CD application, and environment. Deploy and rollback accept immutable sha256 digests only. `SENTINEL_OPERATIONAL_TARGETS` independently allowlists Argo CD and Grafana read targets.
 ## Documentation
 
 - [Korean README](README.ko.md)

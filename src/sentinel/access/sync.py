@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import hjson
 import yaml
 
 
@@ -32,7 +33,7 @@ class AccessDirectory:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.users = self._load_users()
-        self.groups = self._load_groups()
+        self.groups = self._load_role_groups()
 
     def active_users(self) -> list[AccessUser]:
         return [user for user in self.users if user.status == "active"]
@@ -43,20 +44,24 @@ class AccessDirectory:
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            raw_roles = item.get("roles")
+            roles = raw_roles if isinstance(raw_roles, list) else [item.get("role")]
+            groups = {str(group) for group in item.get("groups", [])}
+            groups.update(str(role) for role in roles if role)
             users.append(
                 AccessUser(
                     email=str(item.get("email") or item.get("id") or ""),
-                    slack_user_id=item.get("slack_user_id"),
-                    github_username=item.get("github_username"),
-                    roles={str(role) for role in item.get("roles", [])},
-                    groups={str(group) for group in item.get("groups", [])},
+                    slack_user_id=item.get("slack_user_id") or item.get("slack"),
+                    github_username=item.get("github_username") or item.get("github"),
+                    roles={str(role) for role in roles if role},
+                    groups=groups,
                     status=str(item.get("status", "active")),
                 )
             )
         return users
 
-    def _load_groups(self) -> dict[str, AccessGroup]:
-        raw = self._load_yaml("groups.yaml").get("groups", {})
+    def _load_role_groups(self) -> dict[str, AccessGroup]:
+        raw = self._load_yaml("roles.yaml").get("roles", {})
         groups: dict[str, AccessGroup] = {}
         for name, item in raw.items():
             if not isinstance(item, dict):
@@ -86,9 +91,19 @@ class AccessSync:
         self.dry_run = dry_run
         self.sync_removals = sync_removals
 
-    def render_tailscale_policy(self, existing_policy: dict[str, Any] | None = None) -> dict[str, Any]:
-        policy = dict(existing_policy or {})
-        policy["groups"] = self.render_tailscale_groups()
+    def render_tailscale_policy(
+        self, existing_policy: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        if existing_policy is None:
+            raise RuntimeError("an existing Tailscale policy is required")
+        managed_groups = self.render_tailscale_groups()
+        if not managed_groups:
+            raise RuntimeError("access/roles.yaml defines no managed Tailscale groups")
+        policy = dict(existing_policy)
+        current_groups = policy.get("groups")
+        if not isinstance(current_groups, dict):
+            raise RuntimeError("the existing Tailscale policy must contain a groups mapping")
+        policy["groups"] = {**current_groups, **managed_groups}
         return policy
 
     def render_tailscale_groups(self) -> dict[str, list[str]]:
@@ -96,7 +111,9 @@ class AccessSync:
         for group_name, group in self.access.groups.items():
             if not group.tailscale_group:
                 continue
-            members = [user.email for user in self.access.active_users() if group_name in user.groups]
+            members = [
+                user.email for user in self.access.active_users() if group_name in user.groups
+            ]
             groups[group.tailscale_group] = sorted(members)
         return groups
 
@@ -176,7 +193,9 @@ class AccessSync:
                 for member in current:
                     if member["email"] in desired:
                         continue
-                    response = client.delete(f"{root}/api/teams/{team_id}/members/{member['userId']}")
+                    response = client.delete(
+                        f"{root}/api/teams/{team_id}/members/{member['userId']}"
+                    )
                     if response.status_code != 404:
                         response.raise_for_status()
         return operations
@@ -222,7 +241,9 @@ class AccessSync:
         for group_name, group in self.access.groups.items():
             if not group.grafana_team:
                 continue
-            members = {user.email for user in self.access.active_users() if group_name in user.groups}
+            members = {
+                user.email for user in self.access.active_users() if group_name in user.groups
+            }
             desired[group.grafana_team] = members
         return desired
 
@@ -253,7 +274,9 @@ class AccessSync:
         payload = created.json()
         return int(payload.get("teamId") or payload.get("id"))
 
-    def _grafana_current_members(self, client: Any, root: str, team_id: int) -> list[dict[str, Any]]:
+    def _grafana_current_members(
+        self, client: Any, root: str, team_id: int
+    ) -> list[dict[str, Any]]:
         response = client.get(f"{root}/api/teams/{team_id}/members")
         response.raise_for_status()
         members = []
@@ -270,8 +293,11 @@ def _load_policy(path: str | None) -> dict[str, Any] | None:
         return None
     policy_path = Path(path)
     if not policy_path.exists():
-        return None
-    loaded = json.loads(policy_path.read_text(encoding="utf-8"))
+        raise RuntimeError(f"Tailscale policy does not exist: {policy_path}")
+    try:
+        loaded = hjson.loads(policy_path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise RuntimeError(f"{policy_path} must contain valid HuJSON") from exc
     if not isinstance(loaded, dict):
         raise RuntimeError(f"{policy_path} must contain a JSON object")
     return loaded
@@ -306,16 +332,25 @@ def main() -> None:
         dry_run=args.dry_run,
         sync_removals=args.sync_removals,
     )
-    tailscale_policy = sync.render_tailscale_policy(_load_policy(args.tailscale_policy_in))
+    tailscale_requested = bool(args.tailscale_tailnet or args.tailscale_policy_out)
+    tailscale_policy = (
+        sync.render_tailscale_policy(_load_policy(args.tailscale_policy_in))
+        if tailscale_requested
+        else None
+    )
     result: dict[str, Any] = {
         "github": sync.sync_github_teams(args.github_org or "", args.github_token)
         if args.github_org
         else [],
         "grafana": sync.sync_grafana_teams(args.grafana_url, args.grafana_token),
-        "tailscale": sync.publish_tailscale_policy(
-            args.tailscale_tailnet,
-            args.tailscale_token,
-            tailscale_policy,
+        "tailscale": (
+            sync.publish_tailscale_policy(
+                args.tailscale_tailnet,
+                args.tailscale_token,
+                tailscale_policy,
+            )
+            if tailscale_policy is not None
+            else []
         ),
     }
 
@@ -326,6 +361,8 @@ def main() -> None:
         )
 
     if args.tailscale_policy_out:
+        if tailscale_policy is None:  # pragma: no cover - guarded by tailscale_requested
+            raise RuntimeError("Tailscale policy rendering was not requested")
         result["tailscale_policy_out"] = _write_json(args.tailscale_policy_out, tailscale_policy)
 
     if args.argocd_policy_out:

@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import base64
+import json
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Callable
+
+import hjson
 
 from sentinel.config import Settings
 from sentinel.models import OperationRequest, ToolResult
 
 RenderFile = Callable[[str | None], str]
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SAFE_NAME = re.compile(r"[^a-z0-9-]+")
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_ACCESS_ROLES = {"gui-user", "dev", "operator", "admin"}
 
 
 @dataclass(frozen=True)
@@ -19,10 +27,10 @@ class FileMutation:
 
 @dataclass(frozen=True)
 class PullRequestDraft:
+    action: str
     title: str
     body: str
     mutations: list[FileMutation]
-    labels: list[str]
 
 
 class GitHubClient:
@@ -39,77 +47,113 @@ class GitHubClient:
                     "repo": self.settings.gitops_repo,
                     "title": draft.title,
                     "files": sorted(mutation.path for mutation in draft.mutations),
-                    "labels": draft.labels,
                 },
             )
+        if not self.settings.github_commit_signoff:
+            raise RuntimeError("SENTINEL_GITHUB_COMMIT_SIGNOFF is required for live pull requests")
 
         owner, repo = self.settings.gitops_repo.split("/", 1)
-        action = draft.labels[1] if len(draft.labels) > 1 else "change"
-        branch = f"sentinel/{action}-{request.request_id[:8]}"
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.settings.github_token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
+        action = _SAFE_NAME.sub("-", draft.action.lower()).strip("-") or "change"
+        branch = f"fix/sentinel-{action}-{request.request_id[:8].lower()}"
         base_url = f"https://api.github.com/repos/{owner}/{repo}"
 
-        try:
-            import httpx
-        except ImportError as exc:  # pragma: no cover - optional dependency boundary
-            raise RuntimeError("httpx is required when GitHub dry-run is disabled") from exc
-
-        with httpx.Client(timeout=30.0, headers=headers) as client:
+        with self._http_client() as client:
             base_ref = client.get(f"{base_url}/git/ref/heads/{self.settings.github_default_branch}")
             base_ref.raise_for_status()
             sha = base_ref.json()["object"]["sha"]
-
-            create_ref = client.post(f"{base_url}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha})
-            create_ref.raise_for_status()
-
-            for mutation in draft.mutations:
-                self._mutate_file(client, base_url, branch, mutation, draft.title)
-
-            pr = client.post(
-                f"{base_url}/pulls",
-                json={
-                    "title": draft.title,
-                    "head": branch,
-                    "base": self.settings.github_default_branch,
-                    "body": draft.body,
-                    "maintainer_can_modify": True,
-                },
+            created = client.post(
+                f"{base_url}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha}
             )
-            pr.raise_for_status()
-            pr_payload = pr.json()
+            created.raise_for_status()
 
-            if draft.labels:
-                client.post(f"{base_url}/issues/{pr_payload['number']}/labels", json={"labels": draft.labels}).raise_for_status()
+            try:
+                commit_message = (
+                    f"{draft.title}\n\nSigned-off-by: {self.settings.github_commit_signoff}"
+                )
+                for mutation in draft.mutations:
+                    self._mutate_file(client, base_url, branch, mutation, commit_message)
 
-        return ToolResult(ok=True, message="pull request created", data={"pull_request_url": pr_payload["html_url"], "branch": branch})
+                pr = client.post(
+                    f"{base_url}/pulls",
+                    json={
+                        "title": draft.title,
+                        "head": branch,
+                        "base": self.settings.github_default_branch,
+                        "body": draft.body,
+                        "maintainer_can_modify": True,
+                        "draft": True,
+                    },
+                )
+                pr.raise_for_status()
+                payload = pr.json()
+            except Exception:
+                try:
+                    cleanup = client.delete(f"{base_url}/git/refs/heads/{branch}")
+                    if cleanup.status_code not in {204, 404}:
+                        cleanup.raise_for_status()
+                except Exception:
+                    pass
+                raise
 
-    def _mutate_file(self, client: Any, base_url: str, branch: str, mutation: FileMutation, message: str) -> None:
+        return ToolResult(
+            ok=True,
+            message="draft pull request created",
+            data={"pull_request_url": payload["html_url"], "branch": branch},
+        )
+
+    def read_file(self, path: str) -> str:
+        if not self.settings.github_token:
+            raise RuntimeError("SENTINEL_GITHUB_TOKEN is required for access lookup")
+        owner, repo = self.settings.gitops_repo.split("/", 1)
+        encoded_path = str(PurePosixPath(path))
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}"
+        with self._http_client() as client:
+            response = client.get(url, params={"ref": self.settings.github_default_branch})
+            response.raise_for_status()
+            encoded = str(response.json().get("content", "")).replace("\n", "")
+        return base64.b64decode(encoded).decode("utf-8")
+
+    def _http_client(self) -> Any:
+        try:
+            import httpx
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("httpx is required for GitHub integration") from exc
+        return httpx.Client(
+            timeout=30.0,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {self.settings.github_token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+
+    def _mutate_file(
+        self,
+        client: Any,
+        base_url: str,
+        branch: str,
+        mutation: FileMutation,
+        message: str,
+    ) -> None:
         encoded_path = str(PurePosixPath(mutation.path))
         existing = client.get(f"{base_url}/contents/{encoded_path}", params={"ref": branch})
-        sha = None
-        current_content = None
-        if existing.status_code == 200:
-            payload = existing.json()
-            sha = payload.get("sha")
-            encoded = str(payload.get("content", "")).replace("\n", "")
-            current_content = base64.b64decode(encoded).decode("utf-8") if encoded else ""
-        elif existing.status_code == 404:
-            current_content = None
-        else:
+        if existing.status_code != 200:
             existing.raise_for_status()
-        new_content = mutation.render(current_content)
-        request_payload: dict[str, Any] = {
-            "message": message,
-            "content": base64.b64encode(new_content.encode("utf-8")).decode("ascii"),
-            "branch": branch,
-        }
-        if sha:
-            request_payload["sha"] = sha
-        response = client.put(f"{base_url}/contents/{encoded_path}", json=request_payload)
+        payload = existing.json()
+        encoded = str(payload.get("content", "")).replace("\n", "")
+        current = base64.b64decode(encoded).decode("utf-8")
+        new_content = mutation.render(current)
+        if new_content == current:
+            raise RuntimeError(f"requested change is already present in {mutation.path}")
+        response = client.put(
+            f"{base_url}/contents/{encoded_path}",
+            json={
+                "message": message,
+                "content": base64.b64encode(new_content.encode("utf-8")).decode("ascii"),
+                "branch": branch,
+                "sha": payload["sha"],
+            },
+        )
         response.raise_for_status()
 
 
@@ -118,195 +162,375 @@ class GitOpsPullRequestFactory:
         self.settings = settings
 
     def deploy(self, request: OperationRequest, args: dict[str, Any]) -> PullRequestDraft:
-        service = str(args.get("service") or request.service or "unknown")
-        environment = str(args.get("environment") or request.environment or "staging")
-        image_tag = str(args.get("image_tag") or args.get("target") or "latest")
-        path = self.settings.gitops_deploy_values_path_template.format(service=service, environment=environment)
+        service, environment, target = self._target(request, args)
+        image = self._normalize_image(target, str(args.get("image_tag") or ""))
         return PullRequestDraft(
-            title=f"sentinel: deploy {service} to {environment}",
-            body=self._body(request, "deploy", args),
-            mutations=[FileMutation(path=path, render=lambda current: self._render_image_values(current, service, environment, image_tag, request))],
-            labels=["sentinel", "deploy", f"env:{environment}"],
+            action="deploy",
+            title=f"deploy: update {service} image",
+            body=self._body(request, "deploy", service, environment),
+            mutations=[
+                FileMutation(
+                    target["path"], lambda current: self._render_image(current, target, image)
+                )
+            ],
         )
 
     def restart(self, request: OperationRequest, args: dict[str, Any]) -> PullRequestDraft:
-        service = str(args.get("service") or request.service or "unknown")
-        environment = str(args.get("environment") or request.environment or "staging")
-        path = self.settings.gitops_deploy_values_path_template.format(service=service, environment=environment)
+        service, environment, target = self._target(request, args)
         return PullRequestDraft(
-            title=f"sentinel: restart {service} in {environment}",
-            body=self._body(request, "restart", args),
-            mutations=[FileMutation(path=path, render=lambda current: self._render_restart_values(current, service, environment, request))],
-            labels=["sentinel", "restart", f"env:{environment}"],
+            action="restart",
+            title=f"chore: restart {service}",
+            body=self._body(request, "restart", service, environment),
+            mutations=[
+                FileMutation(
+                    target["path"],
+                    lambda current: self._render_restart(current, request.request_id),
+                )
+            ],
         )
 
     def rollback(self, request: OperationRequest, args: dict[str, Any]) -> PullRequestDraft:
-        target = str(args.get("target") or args.get("image_tag") or "previous")
-        args = {**args, "image_tag": target}
-        draft = self.deploy(request, args)
+        service, environment, target = self._target(request, args)
+        image = self._normalize_image(target, str(args.get("target") or ""))
         return PullRequestDraft(
-            title=draft.title.replace("deploy", "rollback"),
-            body=self._body(request, "rollback", args),
-            mutations=draft.mutations,
-            labels=[label.replace("deploy", "rollback") for label in draft.labels],
+            action="rollback",
+            title=f"revert: roll back {service} image",
+            body=self._body(request, "rollback", service, environment),
+            mutations=[
+                FileMutation(
+                    target["path"], lambda current: self._render_image(current, target, image)
+                )
+            ],
         )
 
     def access_change(self, request: OperationRequest, args: dict[str, Any]) -> PullRequestDraft:
-        user = str(args.get("user") or "unknown@example.com")
-        action = str(args.get("action") or "access")
-        path = "access/users.yaml"
+        user = str(args.get("user") or "").strip()
+        action = str(args.get("action") or "").strip()
+        if not user or action not in {"onboard", "offboard", "grant", "revoke"}:
+            raise RuntimeError("access change requires a supported action and user")
+        if not _EMAIL.fullmatch(user):
+            raise RuntimeError("access user must be an email address")
         return PullRequestDraft(
-            title=f"sentinel: {action} {user}",
-            body=self._body(request, action, args),
-            mutations=[FileMutation(path=path, render=lambda current: self._render_access_users(current, request, args))],
-            labels=["sentinel", "access"],
+            action=f"access-{action}",
+            title=f"access: {action} {user}",
+            body=self._body(request, action, "access", "production"),
+            mutations=[
+                FileMutation(
+                    "access/users.yaml",
+                    lambda current: self._render_access_users(current, args),
+                ),
+                FileMutation(
+                    "external/tailscale/policy.hujson",
+                    lambda current: self._render_tailscale_policy(current, args),
+                ),
+            ],
         )
 
-    def _render_image_values(self, current: str | None, service: str, environment: str, image_tag: str, request: OperationRequest) -> str:
-        values = self._load_yaml(current)
-        repository, tag = self._split_image(image_tag)
-        image = values.setdefault("image", {})
-        if not isinstance(image, dict):
-            image = {}
-            values["image"] = image
-        if repository:
-            image["repository"] = repository
-        image.pop("digest", None)
-        image["tag"] = tag
-        values.setdefault("sentinel", {})
-        values["sentinel"].update({"lastRequestId": request.request_id, "service": service, "environment": environment})
-        return self._dump_yaml(values)
-
-    def _render_restart_values(self, current: str | None, service: str, environment: str, request: OperationRequest) -> str:
-        values = self._load_yaml(current)
-        annotations = values.setdefault("podAnnotations", {})
-        if not isinstance(annotations, dict):
-            annotations = {}
-            values["podAnnotations"] = annotations
-        annotations["sentinel.dev/restartedAt"] = request.request_id
-        values.setdefault("sentinel", {})
-        values["sentinel"].update({"lastRequestId": request.request_id, "service": service, "environment": environment})
-        return self._dump_yaml(values)
-
-    def _render_access_users(self, current: str | None, request: OperationRequest, args: dict[str, Any]) -> str:
-        values = self._load_yaml(current)
-        raw_users = values.setdefault("users", [])
-        if not isinstance(raw_users, list):
+    def find_access_user(self, current: str, identifier: str) -> dict[str, str] | None:
+        values = self._load_yaml(current, "access/users.yaml")
+        users = values.get("users", [])
+        if not isinstance(users, list):
             raise RuntimeError("access/users.yaml must contain a users list")
-
-        action = str(args.get("action") or "access")
-        user_id = str(args.get("user") or "").strip()
-        if not user_id:
-            raise RuntimeError("access change requires user")
-
-        user = self._find_or_create_access_user(raw_users, user_id, action)
-        user["email"] = str(args.get("email") or user.get("email") or user_id)
-        user["status"] = "active"
-        for field in ("github_username", "slack_user_id"):
-            if args.get(field):
-                user[field] = str(args[field])
-
-        if action == "offboard":
-            user["status"] = "inactive"
-            user["roles"] = []
-            user["groups"] = []
-        elif action == "grant":
-            self._require_role_or_group(action, args)
-            self._add_access_value(user, "roles", args.get("role"))
-            self._add_access_value(user, "groups", args.get("group"))
-        elif action == "revoke":
-            self._require_role_or_group(action, args)
-            self._remove_access_value(user, "roles", args.get("role"))
-            self._remove_access_value(user, "groups", args.get("group"))
-        elif action == "onboard":
-            self._add_access_value(user, "roles", args.get("role"))
-            self._add_access_value(user, "groups", args.get("group"))
-        else:
-            raise RuntimeError(f"unsupported access action: {action}")
-
-        values["sentinel"] = {
-            "lastRequestId": request.request_id,
-            "lastActorSlackUserId": request.principal.slack_user_id,
-            "lastAccessAction": action,
-        }
-        return self._dump_yaml(values)
-
-    def _find_or_create_access_user(self, users: list[Any], user_id: str, action: str) -> dict[str, Any]:
         for item in users:
             if not isinstance(item, dict):
                 continue
-            identifiers = {str(item.get("email") or ""), str(item.get("id") or ""), str(item.get("slack_user_id") or "")}
-            if user_id in identifiers:
+            ids = {str(item.get(key) or "") for key in ("id", "email", "slack", "github")}
+            if identifier in ids:
+                return {str(key): str(value) for key, value in item.items() if value is not None}
+        return None
+
+    def application_name(self, request: OperationRequest, args: dict[str, Any]) -> str:
+        try:
+            _, _, target = self._target(request, args)
+        except RuntimeError:
+            service = str(args.get("service") or request.service or "unknown")
+            environment = str(args.get("environment") or request.environment or "unknown")
+            return self.settings.argocd_app_name_template.format(
+                service=service, environment=environment
+            )
+        return target["application"]
+
+    def _target(
+        self,
+        request: OperationRequest,
+        args: dict[str, Any],
+    ) -> tuple[str, str, dict[str, str]]:
+        service = str(args.get("service") or request.service or "").strip()
+        environment = str(args.get("environment") or request.environment or "").strip()
+        target = self.settings.gitops_targets.get(service)
+        if not target:
+            raise RuntimeError(f"unsupported GitOps service: {service}")
+        required = {"path", "repository", "application", "environment"}
+        missing = sorted(required - target.keys())
+        if missing:
+            raise RuntimeError(f"GitOps target {service} is missing: {', '.join(missing)}")
+        if environment != target["environment"]:
+            raise RuntimeError(f"unsupported environment for {service}: {environment}")
+        path = PurePosixPath(target["path"])
+        if path.is_absolute() or ".." in path.parts or path.suffix not in {".yaml", ".yml"}:
+            raise RuntimeError(f"unsafe GitOps target path: {target['path']}")
+        return service, environment, target
+
+    def _normalize_image(self, target: dict[str, str], requested: str) -> str:
+        repository = target["repository"]
+        digest = requested
+        if requested.startswith(repository + "@"):
+            digest = requested[len(repository) + 1 :]
+        elif "@" in requested or requested.startswith("ghcr.io/"):
+            raise RuntimeError("requested image repository does not match the configured target")
+        if not _DIGEST.fullmatch(digest):
+            raise RuntimeError("image must use an immutable sha256 digest")
+        return f"{repository}@{digest}"
+
+    def _render_image(self, current: str | None, target: dict[str, str], image: str) -> str:
+        if current is None:
+            raise RuntimeError(f"GitOps manifest does not exist: {target['path']}")
+        repository = re.escape(target["repository"])
+        pattern = re.compile(
+            rf"(?m)^(\s*image:\s*)(?P<quote>['\"]?){repository}"
+            rf"@sha256:[0-9a-f]{{64}}(?P=quote)(?P<suffix>\s*(?:#.*)?)$"
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            quote = match.group("quote")
+            return f"{match.group(1)}{quote}{image}{quote}{match.group('suffix')}"
+
+        rendered, count = pattern.subn(replace, current)
+        if count != 1:
+            raise RuntimeError(
+                f"expected exactly one digest-pinned image for {target['repository']}, found {count}"
+            )
+        return rendered
+
+    def _render_restart(self, current: str | None, request_id: str) -> str:
+        if current is None:
+            raise RuntimeError("GitOps manifest does not exist")
+        annotation = "sentinel.dev/restartedAt"
+        existing = re.compile(rf"(?m)^(\s*){re.escape(annotation)}:\s*.*$")
+        if existing.search(current):
+            return existing.sub(rf'\g<1>{annotation}: "{request_id}"', current, count=1)
+        annotations = re.compile(r"(?m)^(\s{6}annotations:\s*(?:#.*)?)$")
+        if annotations.search(current):
+            return annotations.sub(
+                rf'\1\n        {annotation}: "{request_id}"', current, count=1
+            )
+        marker = re.compile(r"(?m)^(\s{6}labels:\s*.*)$")
+        rendered, count = marker.subn(
+            rf'\1\n      annotations:\n        {annotation}: "{request_id}"', current, count=1
+        )
+        if count != 1:
+            raise RuntimeError("could not locate Deployment pod-template metadata")
+        return rendered
+
+    def _render_access_users(self, current: str | None, args: dict[str, Any]) -> str:
+        values = self._load_yaml(current, "access/users.yaml")
+        users = values.setdefault("users", [])
+        if not isinstance(users, list):
+            raise RuntimeError("access/users.yaml must contain a users list")
+        action = str(args["action"])
+        identifier = str(args["user"]).strip()
+        user = self._find_or_create_user(users, identifier, action)
+
+        if action == "onboard":
+            user["id"] = str(args.get("id") or user.get("id") or self._user_id(identifier))
+            user["name"] = str(args.get("name") or user.get("name") or user["id"])
+            user["email"] = str(args.get("email") or user.get("email") or identifier)
+            user["role"] = self._role(args.get("role") or user.get("role") or "gui-user")
+            user["status"] = "active"
+        elif action == "offboard":
+            user["status"] = "inactive"
+        elif action == "grant":
+            user["role"] = self._role(args.get("role"))
+            user["status"] = "active"
+        elif action == "revoke":
+            requested = self._role(args.get("role"))
+            if str(user.get("role")) != requested:
+                raise RuntimeError(f"user does not have role {requested}")
+            user["role"] = "gui-user"
+
+        if args.get("github") or args.get("github_username"):
+            user["github"] = str(args.get("github") or args.get("github_username"))
+        if args.get("slack") or args.get("slack_user_id"):
+            user["slack"] = str(args.get("slack") or args.get("slack_user_id"))
+        return self._dump_yaml(values)
+
+    def _render_tailscale_policy(self, current: str | None, args: dict[str, Any]) -> str:
+        if not current or not current.strip():
+            raise RuntimeError("external/tailscale/policy.hujson does not exist or is empty")
+        try:
+            policy = hjson.loads(current)
+        except ValueError as exc:
+            raise RuntimeError("external/tailscale/policy.hujson must be valid HuJSON") from exc
+        groups = policy.get("groups")
+        if not isinstance(groups, dict):
+            raise RuntimeError("Tailscale policy must contain a groups mapping")
+        role_groups = {
+            role: str(metadata.get("tailscale_group") or "")
+            for role, metadata in self.settings.access_role_groups.items()
+            if isinstance(metadata, dict)
+        }
+        if set(role_groups) != _ACCESS_ROLES or any(not value for value in role_groups.values()):
+            raise RuntimeError("SENTINEL_ACCESS_ROLE_GROUPS must map every access role")
+        email = str(args["user"]).strip()
+        desired: dict[str, list[str]] = {}
+        for group_name in role_groups.values():
+            members = groups.get(group_name)
+            if not isinstance(members, list):
+                raise RuntimeError(f"managed Tailscale group is missing: {group_name}")
+            desired[group_name] = sorted(
+                {str(member) for member in members if member != email}
+            )
+        action = str(args["action"])
+        if action != "offboard":
+            role = "gui-user" if action == "revoke" else self._role(args.get("role") or "gui-user")
+            group_name = role_groups[role]
+            desired[group_name] = sorted({*desired[group_name], email})
+
+        rendered = current
+        for group_name, members in desired.items():
+            rendered = self._replace_hujson_group(rendered, group_name, members)
+        return rendered if rendered.endswith("\n") else rendered + "\n"
+
+    def _replace_hujson_group(
+        self, current: str, group_name: str, members: list[str]
+    ) -> str:
+        key = re.escape(json.dumps(group_name))
+        match = re.search(rf"(?P<indent>[ \t]*){key}\s*:\s*\[", current)
+        if not match:
+            raise RuntimeError(f"managed Tailscale group is missing from HuJSON: {group_name}")
+        start = match.end() - 1
+        end = self._hujson_array_end(current, start)
+        inner = current[start + 1 : end]
+        comments = re.findall(r"//[^\r\n]*|/\*.*?\*/", inner, flags=re.DOTALL)
+        multiline = "\n" in inner or bool(comments)
+        if multiline:
+            item_indent = match.group("indent") + "  "
+            lines = [f"{item_indent}{comment.strip()}" for comment in comments]
+            lines.extend(f"{item_indent}{json.dumps(member)}," for member in members)
+            replacement = "\n" + "\n".join(lines) + "\n" + match.group("indent")
+        else:
+            replacement = ", ".join(json.dumps(member) for member in members)
+        return current[: start + 1] + replacement + current[end:]
+
+    def _hujson_array_end(self, current: str, start: int) -> int:
+        quote: str | None = None
+        escaped = False
+        line_comment = False
+        block_comment = False
+        index = start + 1
+        while index < len(current):
+            char = current[index]
+            following = current[index + 1] if index + 1 < len(current) else ""
+            if line_comment:
+                line_comment = char not in "\r\n"
+            elif block_comment:
+                if char == "*" and following == "/":
+                    block_comment = False
+                    index += 1
+            elif quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+            elif char in {"'", '"'}:
+                quote = char
+            elif char == "/" and following == "/":
+                line_comment = True
+                index += 1
+            elif char == "/" and following == "*":
+                block_comment = True
+                index += 1
+            elif char == "]":
+                return index
+            index += 1
+        raise RuntimeError("unterminated managed Tailscale group array")
+
+    def _find_or_create_user(
+        self, users: list[Any], identifier: str, action: str
+    ) -> dict[str, Any]:
+        for item in users:
+            if not isinstance(item, dict):
+                continue
+            ids = {str(item.get(key) or "") for key in ("id", "email", "slack", "github")}
+            if identifier in ids:
                 return item
-        if action in {"offboard", "revoke"}:
-            raise RuntimeError(f"access user not found: {user_id}")
-        created: dict[str, Any] = {"email": user_id, "status": "active", "roles": [], "groups": []}
+        if action != "onboard":
+            raise RuntimeError(f"access user not found: {identifier}")
+        created: dict[str, Any] = {}
         users.append(created)
         return created
 
-    def _require_role_or_group(self, action: str, args: dict[str, Any]) -> None:
-        role = args.get("role")
-        group = args.get("group")
-        has_role = role is not None and (not isinstance(role, str) or bool(role.strip()))
-        has_group = group is not None and (not isinstance(group, str) or bool(group.strip()))
-        if not has_role and not has_group:
-            raise RuntimeError(f"access {action} requires role or group")
+    def _role(self, value: Any) -> str:
+        role = str(value or "").strip()
+        if role not in _ACCESS_ROLES:
+            raise RuntimeError(f"unsupported access role: {role}")
+        return role
 
-    def _add_access_value(self, user: dict[str, Any], field: str, value: Any) -> None:
-        if value is None or str(value).strip() == "":
-            return
-        items = [str(item) for item in user.get(field, [])]
-        candidate = str(value)
-        if candidate not in items:
-            items.append(candidate)
-        user[field] = sorted(items)
+    def _user_id(self, identifier: str) -> str:
+        candidate = identifier.split("@", 1)[0].lower()
+        candidate = _SAFE_NAME.sub("-", candidate).strip("-")
+        if not candidate:
+            raise RuntimeError("could not derive a user id")
+        return candidate
 
-    def _remove_access_value(self, user: dict[str, Any], field: str, value: Any) -> None:
-        if value is None or str(value).strip() == "":
-            return
-        candidate = str(value)
-        user[field] = sorted(str(item) for item in user.get(field, []) if str(item) != candidate)
-
-    def _load_yaml(self, current: str | None) -> dict[str, Any]:
+    def _load_yaml(self, current: str | None, path: str) -> dict[str, Any]:
         if not current or not current.strip():
-            return {}
+            raise RuntimeError(f"GitOps file does not exist or is empty: {path}")
         try:
             import yaml
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("PyYAML is required to patch GitOps values files") from exc
-        loaded = yaml.safe_load(current) or {}
+            raise RuntimeError("PyYAML is required for GitOps changes") from exc
+        loaded = yaml.safe_load(current)
         if not isinstance(loaded, dict):
-            raise RuntimeError("GitOps values file must contain a YAML mapping")
+            raise RuntimeError(f"{path} must contain a YAML mapping")
         return loaded
 
     def _dump_yaml(self, values: dict[str, Any]) -> str:
-        try:
-            import yaml
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("PyYAML is required to patch GitOps values files") from exc
+        import yaml
+
         return str(yaml.safe_dump(values, sort_keys=False, allow_unicode=True))
 
-    def _split_image(self, image_tag: str) -> tuple[str | None, str]:
-        if ":" not in image_tag:
-            return None, image_tag
-        repository, tag = image_tag.rsplit(":", 1)
-        return repository, tag
-
-    def _header(self, request: OperationRequest) -> str:
-        return "# Generated by Sentinel. Review before merge.\n" f"requestId: {request.request_id}\n" f"actorSlackUserId: {request.principal.slack_user_id}\n"
-
-    def _body(self, request: OperationRequest, action: str, args: dict[str, Any]) -> str:
+    def _body(
+        self,
+        request: OperationRequest,
+        action: str,
+        service: str,
+        environment: str,
+    ) -> str:
+        kubernetes = action in {"deploy", "restart", "rollback"}
+        access = action in {"onboard", "offboard", "grant", "revoke"}
         return "\n".join(
             [
-                "Generated by Sentinel.",
+                "## Summary",
                 "",
+                f"- Sentinel-generated `{action}` change for `{service}` in `{environment}`.",
                 f"- Request ID: `{request.request_id}`",
-                f"- Actor: `{request.principal.slack_user_id}`",
-                f"- Action: `{action}`",
-                f"- Service: `{args.get('service') or request.service or 'n/a'}`",
-                f"- Environment: `{args.get('environment') or request.environment or 'n/a'}`",
+                f"- Actor Slack user: `{request.principal.slack_user_id}`",
+                "- Requires human review and merge; Sentinel never merges pull requests.",
                 "",
-                "This PR must be reviewed and merged by a human before any system changes occur.",
+                "## Change Type",
+                "",
+                f"- [{'x' if kubernetes else ' '}] Kubernetes desired state",
+                "- [ ] External configuration declaration",
+                f"- [{'x' if access else ' '}] Access change",
+                "- [ ] Documentation",
+                "- [x] Bot-generated request",
+                "",
+                "## Checks",
+                "",
+                "- [x] No plaintext secrets are included",
+                "- [x] Access impact is understood",
+                "- [x] Rollback or recovery path is documented",
+                "- [x] Required external manual steps are listed",
+                "",
+                "## External Apply Steps",
+                "",
+                (
+                    "- The cluster-config access-sync workflow publishes the reviewed Tailscale policy."
+                    if access
+                    else "- None. Argo CD applies the merged GitOps change."
+                ),
             ]
         )
-

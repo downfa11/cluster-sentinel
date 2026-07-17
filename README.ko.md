@@ -44,7 +44,7 @@ sequenceDiagram
     participant Argo as Argo CD/Grafana
 
     User->>Slack: "api를 staging에 ghcr.io/acme/api:v1.2.3 버전으로 올려줘"
-    Slack->>Sentinel: DM 또는 bot mention
+    Slack->>Sentinel: 설정된 채널의 bot mention 또는 명시적으로 활성화한 DM
     Sentinel->>Sentinel: Slack 사용자 역할 확인
     Sentinel->>LLM: 자연어 요청 + tool schema 전달
     LLM-->>Sentinel: 선택된 MCP tool + JSON 인자
@@ -52,7 +52,7 @@ sequenceDiagram
     alt 쓰기 작업
         Policy-->>Sentinel: 허용
         Sentinel->>Tool: github_create_deploy_pr
-        Tool->>GitHub: branch 생성, values.yaml 패치, PR 생성
+        Tool->>GitHub: branch 생성, 허용된 manifest 패치, PR 생성
         GitHub-->>Sentinel: PR URL
     else 읽기 작업
         Policy-->>Sentinel: 허용
@@ -68,14 +68,14 @@ sequenceDiagram
 ## 현재 가능한 기능
 
 - Slack Socket Mode 봇 실행
-- Slack DM 및 bot mention 자연어 처리
+- Slack bot mention 자연어 처리(DM은 기본 비활성화)
 - OpenAI Responses API tool calling
 - in-process MCP 스타일 tool gateway
 - 모든 tool call 전 Policy Engine 검사
 - deploy/restart/rollback/access 소스 오브 트루스 변경 PR 생성
-- deploy/rollback PR에서 Helm values의 `image.repository`, `image.tag` 패치
-- restart PR에서 `podAnnotations.sentinel.dev/restartedAt` 패치
-- Argo CD API로 앱 상태 및 managed resource 조회
+- deploy/rollback PR에서 허용된 digest 고정 Deployment image 한 개만 변경
+- restart PR에서 Deployment Pod template의 `sentinel.dev/restartedAt` 변경
+- Argo CD 앱 목록, OutOfSync, 상태, managed resource, Pod, 제한된 Pod 로그 조회
 - Grafana API로 alert 조회
 - JSON audit 로그 출력
 - 지정 Slack 채널로 모니터링/알람 메시지 발송
@@ -91,7 +91,10 @@ Sentinel에게 DM을 보내거나 채널에서 멘션하면 됩니다. Slack 인
 | 재시작 | `api staging 재시작해줘` | `github_create_restart_pr` |
 | 롤백 | `api production을 v1.2.2로 롤백해줘` | `github_create_rollback_pr` |
 | Argo CD 상태 | `api production 상태 확인해줘` | `argocd_get_status` |
-| Argo CD 리소스 | `api staging managed resources 보여줘` | `argocd_diff` |
+| Argo CD 리소스 | `commerce managed resources 보여줘` | `argocd_diff` |
+| OutOfSync 앱 | `OutOfSync 애플리케이션 보여줘` | `argocd_list_out_of_sync` |
+| Argo CD Pod | `commerce pod 보여줘` | `argocd_list_pods` |
+| Argo CD 로그 | `commerce 최근 로그 보여줘` | `argocd_get_logs` |
 | Grafana alert | `api 관련 Grafana alert 보여줘` | `grafana_alerts` |
 | 온보딩 | `alice@example.com 온보딩 PR 만들어줘` | `github_create_onboard_pr` |
 | 권한 부여 | `alice@example.com에게 operator 권한 부여 PR 만들어줘` | `github_create_grant_pr` |
@@ -101,15 +104,7 @@ Sentinel에게 DM을 보내거나 채널에서 멘션하면 됩니다. Slack 인
 
 ## Access 자동화 범위
 
-온보딩, 오프보딩, 권한 부여, 권한 회수 tool은 access 소스 오브 트루스인 `access/users.yaml`을 패치하는 PR을 생성합니다. 해당 변경이 merge된 뒤 `access-sync` GitHub Actions workflow가 `sentinel-access-sync`를 실행해 승인된 상태를 실제 대상에 반영합니다.
-
-- GitHub API로 team membership 동기화. `--sync-removals`가 켜져 있으면 제거까지 처리
-- Grafana API로 team membership 동기화. `--sync-removals`가 켜져 있으면 제거까지 처리
-- Tailscale ACL policy JSON 생성 및 credential이 있으면 Tailscale API로 publish
-- GitOps로 관리되는 Argo CD 설정을 위한 RBAC policy CSV 생성
-
-즉 LLM은 PR만 만들고, 사람 승인 후 automation이 merge된 소스 오브 트루스 상태를 실제 권한으로 반영하는 GitOps 흐름을 유지합니다.
-
+Access tool은 `access/users.yaml`과 `external/tailscale/policy.hujson`의 관리 대상 역할 그룹을 함께 수정하는 리뷰 가능한 PR을 만듭니다. `cluster-config`의 workflow는 `access/roles.yaml` 기준 렌더링 결과가 커밋된 정책과 같은지 먼저 검증한 뒤 Tailscale에 publish합니다. Sentinel이 관리하지 않는 그룹과 나머지 정책 필드는 보존합니다.
 ## 안전 원칙
 
 Sentinel은 다음 기능을 제공하지 않습니다.

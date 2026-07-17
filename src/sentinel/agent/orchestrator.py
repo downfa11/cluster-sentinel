@@ -61,7 +61,9 @@ class AgentOrchestrator:
         write_calls = [item for item in tool_calls if item.name in self.WRITE_TOOLS]
         if len(write_calls) > 1:
             names = ", ".join(item.name for item in write_calls)
-            return ToolResult(False, f"LLM selected multiple write tools; refusing to execute: {names}")
+            return ToolResult(
+                False, f"LLM selected multiple write tools; refusing to execute: {names}"
+            )
 
         tool_results: list[ToolResult] = []
         for item in tool_calls:
@@ -170,9 +172,10 @@ class AgentOrchestrator:
     def _summarize_tool_results(self, results: list[ToolResult]) -> ToolResult:
         if len(results) == 1:
             return results[0]
+        messages = [result.message for result in results]
         return ToolResult(
             ok=all(result.ok for result in results),
-            message="MCP tools completed",
+            message="MCP tools completed:\n" + "\n\n".join(messages),
             data={"results": [result.data for result in results]},
         )
 

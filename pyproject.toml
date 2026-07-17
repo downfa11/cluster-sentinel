@@ -10,6 +10,7 @@ dependencies = [
   "pydantic-settings>=2.0.0",
   "PyGithub>=2.0.0",
   "httpx>=0.27.0",
+  "hjson>=3.1.0,<4.0.0",
   "PyYAML>=6.0.0",
 ]
 
@@ -34,5 +35,5 @@ target-version = "py312"
 python_version = "3.12"
 strict = true
 [[tool.mypy.overrides]]
-module = "yaml"
+module = ["yaml", "hjson"]
 ignore_missing_imports = true

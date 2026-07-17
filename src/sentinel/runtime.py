@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 
@@ -48,7 +48,9 @@ class SentinelRuntime:
             return ToolResult(False, decision.reason)
 
         result = self.agent.handle(request)
-        self.audit.write("request.completed", request, "success" if result.ok else "error", result.data)
+        self.audit.write(
+            "request.completed", request, "success" if result.ok else "error", result.data
+        )
         return result
 
     def format_result(self, result: ToolResult) -> str:
@@ -58,11 +60,11 @@ class SentinelRuntime:
             details = f"\nPR: {result.data['pull_request_url']}"
         elif result.data.get("dry_run"):
             details = f"\nDry run: {result.data.get('title')}"
-        elif result.data.get("results"):
-            details = f"\nMCP tool results: {len(result.data['results'])}"
         return f"Sentinel {status}: {result.message}{details}"
 
     def _clean_slack_text(self, text: str) -> str:
         tokens = text.strip().split()
-        cleaned = [token for token in tokens if not (token.startswith("<@") and token.endswith(">"))]
+        cleaned = [
+            token for token in tokens if not (token.startswith("<@") and token.endswith(">"))
+        ]
         return " ".join(cleaned)
