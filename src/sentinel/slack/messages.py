@@ -122,6 +122,30 @@ def instruction_message(kind: Literal["wrong_channel", "usage"]) -> dict[str, An
     return _payload(f"{title}: {_plain(body)}", [_header(title), _section(body)])
 
 
+def alert_message(severity: str, title: str, body: str | None) -> dict[str, Any]:
+    level = severity.lower()
+    headings = {
+        "info": "ℹ️ Sentinel · 알림",
+        "warning": "⚠️ Sentinel · 경고",
+        "critical": "🚨 Sentinel · 긴급",
+    }
+    heading = headings.get(level, headings["info"])
+    content = f"*{_escape(title)}*"
+    if body:
+        content += f"\n{_escape(body)}"
+    fallback = f"[{level.upper()}] {title}"
+    if body:
+        fallback += f"\n{body}"
+    return _payload(fallback, [_header(heading), _section(content)])
+
+
+def notification_message(text: str) -> dict[str, Any]:
+    return _payload(
+        f"Sentinel · 알림: {text}",
+        [_header("ℹ️ Sentinel · 알림"), _section(_escape(text))],
+    )
+
+
 def _payload(text: str, blocks: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "text": text,

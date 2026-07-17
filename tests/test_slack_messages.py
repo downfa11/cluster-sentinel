@@ -1,7 +1,7 @@
 from typing import Any
 
 from sentinel.models import ToolResult
-from sentinel.slack.messages import instruction_message, onboarding_message, result_message
+from sentinel.slack.messages import alert_message, instruction_message, onboarding_message, result_message
 
 
 def _block_text(block: dict[str, Any]) -> str:
@@ -25,6 +25,18 @@ def test_result_message_uses_one_block_kit_shape_and_disables_unfurls() -> None:
     }
     assert payload["blocks"][2]["type"] == "actions"
     assert payload["blocks"][2]["elements"][0]["url"].endswith("/pull/7")
+    assert payload["mrkdwn"] is False
+    assert payload["unfurl_links"] is False
+    assert payload["unfurl_media"] is False
+
+
+def test_alert_message_uses_standard_layout_and_escapes_untrusted_text() -> None:
+    payload = alert_message("critical", "DB <failure>", "notify <!channel> & investigate")
+
+    assert payload["blocks"][0]["text"]["text"] == "🚨 Sentinel · 긴급"
+    assert payload["blocks"][1]["text"]["text"] == (
+        "*DB &lt;failure&gt;*\nnotify &lt;!channel&gt; &amp; investigate"
+    )
     assert payload["mrkdwn"] is False
     assert payload["unfurl_links"] is False
     assert payload["unfurl_media"] is False
