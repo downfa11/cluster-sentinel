@@ -30,6 +30,12 @@ class Settings:
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("SENTINEL_OPENAI_API_KEY") or None)
     openai_model: str = field(default_factory=lambda: os.getenv("SENTINEL_OPENAI_MODEL", "gpt-4.1-mini"))
 
+    gemini_api_key: str | None = field(default_factory=lambda: os.getenv("SENTINEL_GEMINI_API_KEY") or None)
+    gemini_model: str = field(default_factory=lambda: os.getenv("SENTINEL_GEMINI_MODEL", "gemini-3.5-flash"))
+    gemini_base_url: str = field(
+        default_factory=lambda: os.getenv("SENTINEL_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+    )
+
     slack_bot_token: str | None = field(default_factory=lambda: os.getenv("SENTINEL_SLACK_BOT_TOKEN") or None)
     slack_app_token: str | None = field(default_factory=lambda: os.getenv("SENTINEL_SLACK_APP_TOKEN") or None)
     slack_signing_secret: str | None = field(default_factory=lambda: os.getenv("SENTINEL_SLACK_SIGNING_SECRET") or None)

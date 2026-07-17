@@ -19,7 +19,7 @@ Loki is intentionally not included.
 
 ## Required Runtime
 
-Sentinel requires `SENTINEL_OPENAI_API_KEY`. Without it, Sentinel refuses to guess tools.
+Sentinel requires `SENTINEL_GEMINI_API_KEY` or `SENTINEL_OPENAI_API_KEY`; Gemini is preferred when both exist. Without either key, Sentinel refuses to guess tools.
 
 ## GitOps Writes
 

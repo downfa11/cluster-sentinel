@@ -233,6 +233,57 @@ def test_orchestrator_rejects_multiple_write_tools() -> None:
     assert "multiple write tools" in result.message
 
 
+class _FakeGeminiCompletions:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, object] = {}
+
+    def create(self, **kwargs: object) -> object:
+        self.kwargs = kwargs
+        function = type("Function", (), {"name": "argocd_get_status", "arguments": '{"service":"commerce"}'})()
+        call = type("ToolCall", (), {"function": function})()
+        message = type("Message", (), {"tool_calls": [call]})()
+        choice = type("Choice", (), {"message": message})()
+        return type("Response", (), {"choices": [choice]})()
+
+
+class _FakeGeminiClient:
+    def __init__(self) -> None:
+        self.completions = _FakeGeminiCompletions()
+        self.chat = type("Chat", (), {"completions": self.completions})()
+
+
+class _RecordingMcp:
+    def __init__(self) -> None:
+        self.call: object | None = None
+
+    def list_tools(self) -> list[object]:
+        return []
+
+    def openai_tool_schemas(self) -> list[dict[str, object]]:
+        return [{"name": "argocd_get_status", "description": "status", "parameters": {"type": "object"}}]
+
+    def call_tool(self, _request: OperationRequest, call: object) -> ToolResult:
+        self.call = call
+        return ToolResult(True, "ok")
+
+
+def test_orchestrator_uses_gemini_chat_tool_calling() -> None:
+    mcp = _RecordingMcp()
+    orchestrator = AgentOrchestrator(Settings(gemini_api_key="test"), mcp)
+    client = _FakeGeminiClient()
+    orchestrator.client = client
+
+    result = orchestrator.handle(make_request({Role.ADMIN}))
+
+    assert result.ok
+    assert orchestrator.provider == "gemini"
+    assert client.completions.kwargs["model"] == "gemini-3.5-flash"
+    tools = client.completions.kwargs["tools"]
+    assert isinstance(tools, list)
+    assert tools[0]["function"]["name"] == "argocd_get_status"
+    assert getattr(mcp.call, "name") == "argocd_get_status"
+
+
 def test_slack_dms_are_disabled_by_default(monkeypatch) -> None:
     monkeypatch.delenv("SENTINEL_SLACK_ALLOW_DMS", raising=False)
 
