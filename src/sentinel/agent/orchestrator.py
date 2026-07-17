@@ -108,6 +108,20 @@ class AgentOrchestrator:
         ]
         if database_calls and len(database_calls) != len(tool_calls):
             return "database tools cannot be combined with other tools in one request"
+        databases: set[str] = set()
+        for item in database_calls:
+            try:
+                arguments = parse_tool_arguments(item.arguments)
+            except Exception:
+                return "database tool arguments are invalid"
+            database = arguments.get("database")
+            if isinstance(database, str):
+                databases.add(database)
+        if len(databases) > 1:
+            return (
+                "database schema and read-only query must target the same database; "
+                "refusing to execute"
+            )
         return None
 
     def _instructions(self) -> str:

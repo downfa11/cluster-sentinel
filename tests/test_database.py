@@ -74,6 +74,7 @@ class FakeCursor:
         self.executed = executed
         self.error = error
         self.delay = delay
+        self.index = 0
 
     def __enter__(self) -> FakeCursor:
         return self
@@ -89,13 +90,21 @@ class FakeCursor:
         self.executed.append((sql, args))
         return len(self.rows)
 
-    def fetchall(self) -> list[dict[str, Any]]:
-        return self.rows
+    def fetchone(self) -> dict[str, Any] | None:
+        if self.index >= len(self.rows):
+            return None
+        row = self.rows[self.index]
+        self.index += 1
+        return row
 
 
 class FakeConnection:
     def __init__(self, cursor: FakeCursor) -> None:
         self._cursor = cursor
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
     def __enter__(self) -> FakeConnection:
         return self
@@ -119,10 +128,14 @@ class FakeConnector:
         self.delay = delay
         self.executed: list[tuple[str, object | None]] = []
         self.kwargs: dict[str, object] = {}
+        self.connection: FakeConnection | None = None
 
     def __call__(self, **kwargs: object) -> FakeConnection:
         self.kwargs = kwargs
-        return FakeConnection(FakeCursor(self.rows, self.executed, self.error, self.delay))
+        self.connection = FakeConnection(
+            FakeCursor(self.rows, self.executed, self.error, self.delay)
+        )
+        return self.connection
 
 
 @pytest.fixture(autouse=True)
@@ -279,10 +292,11 @@ def test_schema_returns_only_metadata_and_hides_sensitive_columns() -> None:
 
 def test_query_timeout_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(database_module, "QUERY_TIMEOUT_SECONDS", 0.01)
+    connector = FakeConnector([{"id": 1}], delay=0.05)
     service = DatabaseService(
         database_settings(),
         AuditLogger(),
-        FakeConnector([{"id": 1}], delay=0.05),
+        connector,
     )
     result = service.query_readonly(
         request_for(Role.ADMIN),
@@ -291,6 +305,8 @@ def test_query_timeout_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not result.ok
     assert "timeout" in result.message
     assert "mysql-router.test" not in result.message
+    assert connector.connection is not None
+    assert connector.connection.closed
 
 
 def test_database_error_and_audit_do_not_leak_query_or_credentials(
@@ -384,6 +400,58 @@ def test_slack_table_honors_row_and_byte_limits() -> None:
     assert displayed <= 50
     assert len(rendered.encode("utf-8")) <= MAX_SLACK_BYTES
     assert truncated or displayed == 50
+
+
+def test_slack_table_truncates_oversized_headers_within_byte_limit() -> None:
+    columns = [f"{index}-" + ("alias" * 100) for index in range(2000)]
+    rendered, displayed, truncated = render_slack_table(columns, [])
+    assert displayed == 0
+    assert truncated
+    assert len(rendered.encode("utf-8")) <= MAX_SLACK_BYTES
+
+
+def test_slack_table_reports_clipped_cells_as_truncated() -> None:
+    rendered, displayed, truncated = render_slack_table(["value"], [{"value": "x" * 500}])
+    assert displayed == 1
+    assert truncated
+    assert "x" * 81 not in rendered
+
+
+def test_query_streams_rows_and_bounds_buffered_results() -> None:
+    large_value = "x" * (256 * 1024)
+    connector = FakeConnector([{"payload": large_value} for _ in range(200)])
+    service = DatabaseService(database_settings(), AuditLogger(), connector)
+    result = service.query_readonly(
+        request_for(Role.ADMIN),
+        {
+            "database": "commerce",
+            "sql": "SELECT payload FROM orders",
+            "reason": "bounded result",
+            "limit": 200,
+        },
+    )
+    assert result.ok
+    assert result.data["row_count"] == 200
+    assert result.data["truncated"] is True
+    assert len(result.data["slack_table"].encode("utf-8")) <= MAX_SLACK_BYTES
+
+
+def test_schema_fails_closed_when_metadata_is_truncated() -> None:
+    rows = [
+        {
+            "table_name": "events",
+            "column_name": f"column_{index}",
+            "data_type": "text",
+            "is_nullable": "YES",
+        }
+        for index in range(2001)
+    ]
+    service = DatabaseService(database_settings(), AuditLogger(), FakeConnector(rows))
+    result = service.get_schema(
+        request_for(Role.OPERATOR), {"database": "commerce", "reason": "schema"}
+    )
+    assert not result.ok
+    assert "safe limit" in result.message
 
 
 def test_runtime_formats_database_table_and_truncation() -> None:
@@ -510,3 +578,28 @@ def test_orchestrator_rejects_multiple_database_queries() -> None:
     result = orchestrator.handle(request_for(Role.ADMIN))
     assert not result.ok
     assert "multiple database queries" in result.message
+
+
+class MismatchedDatabaseResponses(SequencedDatabaseResponses):
+    def create(self, **kwargs: object) -> object:
+        response = super().create(**kwargs)
+        if len(self.inputs) == 2:
+            response.output[
+                0
+            ].arguments = (
+                '{"database":"wargame","sql":"SELECT id FROM matches","reason":"wrong db"}'
+            )
+        return response
+
+
+def test_orchestrator_rejects_schema_query_database_mismatch() -> None:
+    mcp = FakeDatabaseMcp()
+    orchestrator = AgentOrchestrator(Settings(openai_api_key="synthetic-key"), mcp)
+    responses = MismatchedDatabaseResponses()
+    orchestrator.client = type("Client", (), {"responses": responses})()
+
+    result = orchestrator.handle(request_for(Role.ADMIN))
+
+    assert not result.ok
+    assert "same database" in result.message
+    assert mcp.calls == ["db_get_schema"]
