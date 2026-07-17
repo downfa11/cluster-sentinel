@@ -68,7 +68,8 @@ sequenceDiagram
 ## What Works Now
 
 - Slack Socket Mode bot
-- Slack bot mention handling with loading/success/failure reactions; DMs are disabled by default
+- Slack mentions plus join-event welcome onboarding and `/onboarding <Tailscale email>`
+- Loading/success/failure reactions; DMs are disabled by default
 - Gemini Chat Completions and OpenAI Responses API tool calling
 - In-process MCP-style tool gateway
 - Policy checks before every tool call
@@ -100,6 +101,7 @@ You can DM Sentinel or mention it in a channel. Natural language is the only Sla
 | Grant access | `alice@example.com에게 operator 권한 부여 PR 만들어줘` | `github_create_grant_pr` |
 | Revoke access | `alice@example.com operator 권한 회수 PR 만들어줘` | `github_create_revoke_pr` |
 | Offboard | `alice@example.com 오프보딩 PR 만들어줘` | `github_create_offboard_pr` |
+| Self-onboard | `/onboarding tailscale-account@example.com` | deterministic draft access PR |
 
 
 ## Access Automation Scope
@@ -137,6 +139,8 @@ SENTINEL_SLACK_BOT_TOKEN=xoxb-...
 SENTINEL_SLACK_APP_TOKEN=xapp-...
 SENTINEL_SLACK_SIGNING_SECRET=...
 SENTINEL_SLACK_CONTROL_CHANNELS=C_COMMAND_CHANNEL_ID
+SENTINEL_SLACK_ONBOARDING_CHANNEL_ID=C_ONBOARDING_CHANNEL_ID
+SENTINEL_SLACK_WELCOME_THREAD_TS=1234567890.123456
 SENTINEL_GITHUB_TOKEN=...
 SENTINEL_GITOPS_REPO=owner/cluster-config
 SENTINEL_OPERATOR_SLACK_USER_IDS='["U_ADMIN_SLACK_ID"]'
@@ -176,6 +180,11 @@ Sentinel uses two Slack channels for separate jobs.
 - `SENTINEL_SLACK_CONTROL_CHANNELS=C_COMMAND_CHANNEL_ID`: mention Sentinel in this private channel to run natural-language commands.
 - `SENTINEL_SLACK_ALERT_CHANNEL_ID=C_ALERT_CHANNEL_ID`: send monitoring warnings, alerts, and errors as the Sentinel bot.
 
+- `SENTINEL_SLACK_ONBOARDING_CHANNEL_ID=C_ONBOARDING_CHANNEL_ID`: permit channel members to use read-only tools and receive join onboarding.
+- `SENTINEL_SLACK_WELCOME_THREAD_TS=...`: fixed parent for welcome and onboarding status replies.
+
+Include the onboarding channel in `SENTINEL_SLACK_CONTROL_CHANNELS`. Channel membership grants no role and never authorizes PR-writing tools. New members provide their Tailscale email with `/onboarding`; Slack email is not inferred.
+
 Invite the Sentinel bot to both private channels. Alert delivery uses Slack `chat.postMessage` with the bot token, so messages appear under the Slack app's bot name.
 
 Test notification delivery:
@@ -211,7 +220,8 @@ Apache License 2.0.
 
 ## Production database questions
 
-When `SENTINEL_DB_READ_ENABLED=true`, an `admin` or `operator` can ask:
+When `SENTINEL_DB_READ_ENABLED=true`, an `admin` or `operator`, or a member asking in the
+configured private onboarding channel, can ask:
 
 - `commerce에서 오늘 생성된 주문 수 보여줘`
 - `wargame에서 최근 완료된 매치 20개 보여줘`
