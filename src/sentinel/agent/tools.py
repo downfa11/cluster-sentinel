@@ -46,10 +46,18 @@ class ToolRegistry:
             "github_create_deploy_pr": self._github_create_deploy_pr,
             "github_create_restart_pr": self._github_create_restart_pr,
             "github_create_rollback_pr": self._github_create_rollback_pr,
-            "github_create_onboard_pr": lambda request, args: self._github_create_access_pr(request, args, "onboard"),
-            "github_create_offboard_pr": lambda request, args: self._github_create_access_pr(request, args, "offboard"),
-            "github_create_grant_pr": lambda request, args: self._github_create_access_pr(request, args, "grant"),
-            "github_create_revoke_pr": lambda request, args: self._github_create_access_pr(request, args, "revoke"),
+            "github_create_onboard_pr": lambda request, args: self._github_create_access_pr(
+                request, args, "onboard"
+            ),
+            "github_create_offboard_pr": lambda request, args: self._github_create_access_pr(
+                request, args, "offboard"
+            ),
+            "github_create_grant_pr": lambda request, args: self._github_create_access_pr(
+                request, args, "grant"
+            ),
+            "github_create_revoke_pr": lambda request, args: self._github_create_access_pr(
+                request, args, "revoke"
+            ),
             "argocd_get_status": self.argocd.get_status,
             "argocd_diff": self.argocd.diff,
             "grafana_alerts": self.grafana.alerts,
@@ -59,13 +67,28 @@ class ToolRegistry:
     @property
     def schemas(self) -> list[dict[str, Any]]:
         return [
-            self._schema("argocd_get_status", "Read Argo CD app health and sync status.", required={"service", "environment"}),
-            self._schema("argocd_diff", "Read Argo CD managed resource summary for an app.", required={"service", "environment"}),
-            self._schema("grafana_alerts", "Read active Grafana alerts for a service.", required={"service"}),
-            self._schema("access_get_user", "Read non-sensitive access metadata for a user.", user=True, required={"user"}),
+            self._schema(
+                "argocd_get_status",
+                "Read Argo CD app health and sync status.",
+                required={"service", "environment"},
+            ),
+            self._schema(
+                "argocd_diff",
+                "Read Argo CD managed resource summary for an app.",
+                required={"service", "environment"},
+            ),
+            self._schema(
+                "grafana_alerts", "Read active Grafana alerts for a service.", required={"service"}
+            ),
+            self._schema(
+                "access_get_user",
+                "Read non-sensitive access metadata for a user.",
+                user=True,
+                required={"user"},
+            ),
             self._schema(
                 "github_create_deploy_pr",
-                "Create a GitOps deploy pull request by updating Helm values image fields.",
+                "Create a draft GitOps deploy PR for an allowlisted digest-pinned workload.",
                 image=True,
                 required={"service", "environment", "image_tag"},
             ),
@@ -80,13 +103,27 @@ class ToolRegistry:
                 target=True,
                 required={"service", "environment", "target"},
             ),
-            self._access_schema("github_create_onboard_pr", "Create an onboarding pull request.", required={"user"}),
-            self._access_schema("github_create_offboard_pr", "Create an offboarding pull request.", required={"user"}),
-            self._access_schema("github_create_grant_pr", "Create an access grant pull request.", required={"user"}),
-            self._access_schema("github_create_revoke_pr", "Create an access revoke pull request.", required={"user"}),
+            self._access_schema(
+                "github_create_onboard_pr", "Create an onboarding pull request.", required={"user"}
+            ),
+            self._access_schema(
+                "github_create_offboard_pr",
+                "Create an offboarding pull request.",
+                required={"user"},
+            ),
+            self._access_schema(
+                "github_create_grant_pr", "Create an access grant pull request.", required={"user"}
+            ),
+            self._access_schema(
+                "github_create_revoke_pr",
+                "Create an access revoke pull request.",
+                required={"user"},
+            ),
         ]
 
-    def execute(self, request: OperationRequest, tool_name: str, args: dict[str, Any]) -> ToolResult:
+    def execute(
+        self, request: OperationRequest, tool_name: str, args: dict[str, Any]
+    ) -> ToolResult:
         handler = self._handlers.get(tool_name)
         if not handler:
             return ToolResult(False, f"unknown MCP tool: {tool_name}")
@@ -94,44 +131,76 @@ class ToolRegistry:
         server_args = {**args, "request_id": request.request_id}
         missing = self._missing_required_args(tool_name, server_args)
         if missing:
-            return ToolResult(False, f"missing required argument(s) for {tool_name}: {', '.join(missing)}")
+            return ToolResult(
+                False, f"missing required argument(s) for {tool_name}: {', '.join(missing)}"
+            )
         invalid = self._invalid_argument_reason(tool_name, server_args)
         if invalid:
             return ToolResult(False, invalid)
 
         decision = self.policy.authorize_tool_call(request, tool_name, server_args)
         if not decision.allowed:
-            self.audit.write("mcp.tool.denied", request, "denied", {"tool": tool_name, "reason": decision.reason})
+            self.audit.write(
+                "mcp.tool.denied", request, "denied", {"tool": tool_name, "reason": decision.reason}
+            )
             return ToolResult(False, decision.reason)
 
-        self.audit.write("mcp.tool.authorized", request, "success", {"tool": tool_name, "args": self._safe_args(server_args)})
+        self.audit.write(
+            "mcp.tool.authorized",
+            request,
+            "success",
+            {"tool": tool_name, "args": self._safe_args(server_args)},
+        )
         try:
             result = handler(request, server_args)
         except Exception as exc:  # pragma: no cover - defensive boundary
-            self.audit.write("mcp.tool.failed", request, "error", {"tool": tool_name, "error": self._safe_error(exc)})
+            self.audit.write(
+                "mcp.tool.failed",
+                request,
+                "error",
+                {"tool": tool_name, "error": self._safe_error(exc)},
+            )
             return ToolResult(False, f"MCP tool failed: {self._safe_error(exc)}")
-        self.audit.write("mcp.tool.completed", request, "success" if result.ok else "error", {"tool": tool_name})
+        self.audit.write(
+            "mcp.tool.completed", request, "success" if result.ok else "error", {"tool": tool_name}
+        )
         return result
 
-    def _github_create_deploy_pr(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
+    def _github_create_deploy_pr(
+        self, request: OperationRequest, args: dict[str, Any]
+    ) -> ToolResult:
         args = {**args, "action": "deploy"}
         return self.github.create_pr(request, self.factory.deploy(request, args))
 
-    def _github_create_restart_pr(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
+    def _github_create_restart_pr(
+        self, request: OperationRequest, args: dict[str, Any]
+    ) -> ToolResult:
         args = {**args, "action": "restart"}
         return self.github.create_pr(request, self.factory.restart(request, args))
 
-    def _github_create_rollback_pr(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
+    def _github_create_rollback_pr(
+        self, request: OperationRequest, args: dict[str, Any]
+    ) -> ToolResult:
         args = {**args, "action": "rollback"}
         return self.github.create_pr(request, self.factory.rollback(request, args))
 
-    def _github_create_access_pr(self, request: OperationRequest, args: dict[str, Any], action: str) -> ToolResult:
+    def _github_create_access_pr(
+        self, request: OperationRequest, args: dict[str, Any], action: str
+    ) -> ToolResult:
         args = {**args, "action": action}
         return self.github.create_pr(request, self.factory.access_change(request, args))
 
     def _access_get_user(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
-        target = args.get("user") or request.principal.slack_user_id
-        return ToolResult(ok=True, message=f"access lookup for {target} is not configured", data={"user": target})
+        target = str(args.get("user") or request.principal.slack_user_id)
+        current = self.github.read_file("access/users.yaml")
+        user = self.factory.find_access_user(current, target)
+        if not user:
+            return ToolResult(ok=False, message=f"access user not found: {target}")
+        return ToolResult(
+            ok=True,
+            message=f"{user.get('id', target)}: role={user.get('role', 'unknown')} status={user.get('status', 'unknown')}",
+            data=user,
+        )
 
     def _schema(
         self,
@@ -143,14 +212,23 @@ class ToolRegistry:
         required: set[str] | None = None,
     ) -> dict[str, Any]:
         properties: dict[str, Any] = {
-            "service": {"type": "string", "description": "Service or application name, for example api."},
+            "service": {
+                "type": "string",
+                "description": "Service or application name, for example api.",
+            },
             "environment": {"type": "string", "enum": ["dev", "staging", "production"]},
             "reason": {"type": "string"},
         }
         if image:
-            properties["image_tag"] = {"type": "string", "description": "Container image tag or version to deploy."}
+            properties["image_tag"] = {
+                "type": "string",
+                "description": "Immutable sha256 digest, optionally prefixed by the configured repository.",
+            }
         if target:
-            properties["target"] = {"type": "string", "description": "Rollback target image tag or version."}
+            properties["target"] = {
+                "type": "string",
+                "description": "Immutable rollback sha256 digest, optionally prefixed by the configured repository.",
+            }
         if user:
             properties["user"] = {"type": "string"}
         return self._tool_schema(name, description, properties, required or set())
@@ -161,17 +239,20 @@ class ToolRegistry:
             description,
             {
                 "user": {"type": "string", "description": "User email, user id, or Slack user id."},
+                "id": {"type": "string"},
+                "name": {"type": "string"},
                 "email": {"type": "string"},
                 "github_username": {"type": "string"},
                 "slack_user_id": {"type": "string"},
-                "role": {"type": "string", "description": "Sentinel/Argo CD role to add or remove."},
-                "group": {"type": "string", "description": "Access group to add or remove."},
+                "role": {"type": "string", "enum": ["gui-user", "dev", "operator", "admin"]},
                 "reason": {"type": "string"},
             },
             required,
         )
 
-    def _tool_schema(self, name: str, description: str, properties: dict[str, Any], required: set[str]) -> dict[str, Any]:
+    def _tool_schema(
+        self, name: str, description: str, properties: dict[str, Any], required: set[str]
+    ) -> dict[str, Any]:
         return {
             "type": "function",
             "name": name,
@@ -195,15 +276,16 @@ class ToolRegistry:
     def _invalid_argument_reason(self, tool_name: str, args: dict[str, Any]) -> str | None:
         if tool_name in {"github_create_grant_pr", "github_create_revoke_pr"}:
             role = args.get("role")
-            group = args.get("group")
-            has_role = role is not None and (not isinstance(role, str) or bool(role.strip()))
-            has_group = group is not None and (not isinstance(group, str) or bool(group.strip()))
-            if not has_role and not has_group:
-                return f"{tool_name} requires at least one of role or group"
+            if role is None or (isinstance(role, str) and not role.strip()):
+                return f"{tool_name} requires role"
         return None
 
     def _safe_args(self, args: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in args.items() if "secret" not in key.lower() and "token" not in key.lower()}
+        return {
+            key: value
+            for key, value in args.items()
+            if "secret" not in key.lower() and "token" not in key.lower()
+        }
 
     def _safe_error(self, exc: Exception) -> str:
         name = exc.__class__.__name__

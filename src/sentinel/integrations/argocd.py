@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -38,17 +38,28 @@ class ArgoCdClient:
                 "namespace": item.get("namespace"),
                 "name": item.get("name"),
                 "status": item.get("status"),
-                "health": item.get("health", {}).get("status") if isinstance(item.get("health"), dict) else None,
+                "health": item.get("health", {}).get("status")
+                if isinstance(item.get("health"), dict)
+                else None,
             }
             for item in items
             if isinstance(item, dict)
         ]
-        return ToolResult(ok=True, message=f"{app_name}: {len(resources)} managed resources", data={"application": app_name, "resources": resources})
+        return ToolResult(
+            ok=True,
+            message=f"{app_name}: {len(resources)} managed resources",
+            data={"application": app_name, "resources": resources},
+        )
 
     def _app_name(self, request: OperationRequest, args: dict[str, Any]) -> str:
         service = str(args.get("service") or request.service or "unknown")
         environment = str(args.get("environment") or request.environment or "unknown")
-        return self.settings.argocd_app_name_template.format(service=service, environment=environment)
+        target = self.settings.gitops_targets.get(service)
+        if target and environment == target.get("environment") and target.get("application"):
+            return target["application"]
+        return self.settings.argocd_app_name_template.format(
+            service=service, environment=environment
+        )
 
     def _get_json(self, path: str) -> dict[str, Any]:
         if not self.settings.argocd_base_url or not self.settings.argocd_token:

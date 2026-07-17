@@ -43,13 +43,17 @@ class AccessDirectory:
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            raw_roles = item.get("roles")
+            roles = raw_roles if isinstance(raw_roles, list) else [item.get("role")]
+            groups = {str(group) for group in item.get("groups", [])}
+            groups.update(str(role) for role in roles if role)
             users.append(
                 AccessUser(
                     email=str(item.get("email") or item.get("id") or ""),
-                    slack_user_id=item.get("slack_user_id"),
-                    github_username=item.get("github_username"),
-                    roles={str(role) for role in item.get("roles", [])},
-                    groups={str(group) for group in item.get("groups", [])},
+                    slack_user_id=item.get("slack_user_id") or item.get("slack"),
+                    github_username=item.get("github_username") or item.get("github"),
+                    roles={str(role) for role in roles if role},
+                    groups=groups,
                     status=str(item.get("status", "active")),
                 )
             )
@@ -86,7 +90,9 @@ class AccessSync:
         self.dry_run = dry_run
         self.sync_removals = sync_removals
 
-    def render_tailscale_policy(self, existing_policy: dict[str, Any] | None = None) -> dict[str, Any]:
+    def render_tailscale_policy(
+        self, existing_policy: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         policy = dict(existing_policy or {})
         policy["groups"] = self.render_tailscale_groups()
         return policy
@@ -96,7 +102,9 @@ class AccessSync:
         for group_name, group in self.access.groups.items():
             if not group.tailscale_group:
                 continue
-            members = [user.email for user in self.access.active_users() if group_name in user.groups]
+            members = [
+                user.email for user in self.access.active_users() if group_name in user.groups
+            ]
             groups[group.tailscale_group] = sorted(members)
         return groups
 
@@ -176,7 +184,9 @@ class AccessSync:
                 for member in current:
                     if member["email"] in desired:
                         continue
-                    response = client.delete(f"{root}/api/teams/{team_id}/members/{member['userId']}")
+                    response = client.delete(
+                        f"{root}/api/teams/{team_id}/members/{member['userId']}"
+                    )
                     if response.status_code != 404:
                         response.raise_for_status()
         return operations
@@ -222,7 +232,9 @@ class AccessSync:
         for group_name, group in self.access.groups.items():
             if not group.grafana_team:
                 continue
-            members = {user.email for user in self.access.active_users() if group_name in user.groups}
+            members = {
+                user.email for user in self.access.active_users() if group_name in user.groups
+            }
             desired[group.grafana_team] = members
         return desired
 
@@ -253,7 +265,9 @@ class AccessSync:
         payload = created.json()
         return int(payload.get("teamId") or payload.get("id"))
 
-    def _grafana_current_members(self, client: Any, root: str, team_id: int) -> list[dict[str, Any]]:
+    def _grafana_current_members(
+        self, client: Any, root: str, team_id: int
+    ) -> list[dict[str, Any]]:
         response = client.get(f"{root}/api/teams/{team_id}/members")
         response.raise_for_status()
         members = []

@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 
 class Role(StrEnum):
+    GUI_USER = "gui-user"
     DEV = "dev"
     OPERATOR = "operator"
     ADMIN = "admin"

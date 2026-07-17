@@ -16,11 +16,15 @@ class IdentityResolver:
     def resolve_slack_user(self, slack_user_id: str) -> Principal:
         user = self._users.get(slack_user_id)
         if user:
+            raw_roles = user.get("roles")
+            access_roles = raw_roles if isinstance(raw_roles, list) else [user.get("role", "dev")]
             return Principal(
                 user_id=str(user.get("id") or slack_user_id),
                 slack_user_id=slack_user_id,
-                github_username=str(user.get("github_username")) if user.get("github_username") else None,
-                roles={Role(str(role)) for role in user.get("roles", ["dev"])},
+                github_username=str(user.get("github_username") or user.get("github"))
+                if user.get("github_username") or user.get("github")
+                else None,
+                roles={Role(str(role)) for role in access_roles},
                 groups={str(group) for group in user.get("groups", [])},
             )
 
@@ -58,6 +62,8 @@ class IdentityResolver:
             return {}
         result: dict[str, dict[str, Any]] = {}
         for user in users:
-            if isinstance(user, dict) and user.get("slack_user_id"):
-                result[str(user["slack_user_id"])] = dict(user)
+            if isinstance(user, dict):
+                slack_user_id = user.get("slack_user_id") or user.get("slack")
+                if slack_user_id:
+                    result[str(slack_user_id)] = dict(user)
         return result
