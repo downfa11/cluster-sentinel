@@ -187,7 +187,7 @@ class ToolRegistry:
             self.audit.write(
                 "mcp.tool.denied", request, "denied", {"tool": tool_name, "reason": decision.reason}
             )
-            return ToolResult(False, decision.reason)
+            return ToolResult(False, decision.reason, {"error_kind": "denied"})
 
         authorized_metadata: dict[str, Any] = {"tool": tool_name}
         if tool_name in PolicyEngine.DATABASE_READ_TOOLS:

@@ -51,7 +51,7 @@ class SentinelRuntime:
         decision = self.policy.authorize_request(request)
         if not decision.allowed:
             self.audit.write("request.denied", request, "denied", {"reason": decision.reason})
-            return ToolResult(False, decision.reason)
+            return ToolResult(False, decision.reason, {"error_kind": "denied"})
 
         result = self.agent.handle(request)
         completion_metadata = result.data
@@ -166,7 +166,9 @@ class SentinelRuntime:
         return f"{local[:2]}***@{domain}"
 
     def format_result(self, result: ToolResult) -> str:
-        status = "OK" if result.ok else "DENIED"
+        status = (
+            "OK" if result.ok else "DENIED" if result.data.get("error_kind") == "denied" else "FAILED"
+        )
         details = ""
         if result.data.get("pull_request_url"):
             details = f"\nPR: {result.data['pull_request_url']}"
@@ -180,6 +182,8 @@ class SentinelRuntime:
             details = (
                 f"\nRows: {row_count}; displayed: {displayed}{suffix}\n{result.data['slack_table']}"
             )
+        elif result.data.get("slack_code_block"):
+            details = f"\n{result.data['slack_code_block']}"
         return f"Sentinel {status}: {result.message}{details}"
 
     def _clean_slack_text(self, text: str) -> str:
