@@ -57,6 +57,15 @@ def test_multiple_tool_results_preserve_log_blocks_for_slack() -> None:
     assert "ready" in _block_text(payload["blocks"][2])
 
 
+def test_result_message_caps_combined_log_blocks_to_slack_message_limit() -> None:
+    large_log = "```\n" + "\n".join("x" * 80 for _ in range(160)) + "\n```"
+    payload = result_message(
+        ToolResult(True, "recent logs", {"slack_code_blocks": [large_log] * 20})
+    )
+
+    assert len(payload["blocks"]) == 50
+
+
 def test_audit_metadata_redacts_log_blocks_recursively() -> None:
     metadata = SentinelRuntime._audit_metadata(
         {

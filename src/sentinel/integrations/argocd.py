@@ -202,8 +202,6 @@ class ArgoCdClient:
 
     def _pod_containers(self, app_name: str, pod: dict[str, Any]) -> list[str]:
         known = self._container_names(pod.get("containers", []))
-        if known:
-            return known
         payload = self._get_json(
             f"/api/v1/applications/{quote(app_name, safe='')}/resource",
             {
@@ -218,15 +216,19 @@ class ArgoCdClient:
             try:
                 resource = json.loads(manifest)
             except json.JSONDecodeError:
-                return []
+                return known
         else:
             resource = manifest
         if not isinstance(resource, dict):
-            return []
+            return known
         spec = resource.get("spec")
         if not isinstance(spec, dict):
-            return []
-        return self._container_names(spec.get("containers", []))
+            return known
+        for field in ("containers", "initContainers", "ephemeralContainers"):
+            for container in self._container_names(spec.get(field, [])):
+                if container not in known:
+                    known.append(container)
+        return known
 
     @staticmethod
     def _container_names(raw_containers: Any) -> list[str]:

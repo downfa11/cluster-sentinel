@@ -55,7 +55,15 @@ class _ResourceTreeArgo(ArgoCdClient):
             "kind": "Pod",
         }
         return {
-            "manifest": json.dumps({"spec": {"containers": [{"name": "api"}, {"name": "sidecar"}]}})
+            "manifest": json.dumps(
+                {
+                    "spec": {
+                        "containers": [{"name": "api"}, {"name": "sidecar"}],
+                        "initContainers": [{"name": "migrate"}],
+                        "ephemeralContainers": [{"name": "debug"}],
+                    }
+                }
+            )
         }
 
     def _get_text(self, path: str, params: dict[str, str]) -> str:
@@ -79,3 +87,10 @@ def test_argocd_resource_tree_discovers_pods_and_uses_optional_container() -> No
     }
     assert logs.data["container"] == "api"
     assert logs.data["slack_code_block"] == "```\nready\n```"
+
+    for container in ("migrate", "debug"):
+        selected_logs = argo.get_logs(
+            _request(), {"_application": "commerce", "container": container}
+        )
+        assert selected_logs.data["container"] == container
+        assert argo.log_params["container"] == container
