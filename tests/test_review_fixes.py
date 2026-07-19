@@ -314,7 +314,8 @@ def test_argocd_listing_and_logs_are_allowlisted_and_rendered() -> None:
     logs = argo.get_logs(
         _request(), {"_application": "commerce", "pod": "commerce-api-1", "tail_lines": 50}
     )
-    assert "```\nready\n```" in logs.message
+    assert logs.message.endswith("(last 50 lines)")
+    assert logs.data["slack_code_block"] == "```\nready\n```"
     with pytest.raises(RuntimeError, match="not managed"):
         argo.get_logs(_request(), {"_application": "commerce", "pod": "other"})
 

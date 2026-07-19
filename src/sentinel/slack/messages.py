@@ -20,7 +20,12 @@ _MAX_BLOCK_TEXT = 2_900
 
 
 def result_message(result: ToolResult) -> dict[str, Any]:
-    title = "✅ Sentinel · 완료" if result.ok else "⛔ Sentinel · 거부됨"
+    if result.ok:
+        title = "✅ Sentinel · 완료"
+    elif result.data.get("error_kind") == "denied":
+        title = "⛔ Sentinel · 거부됨"
+    else:
+        title = "⚠️ Sentinel · 실패"
     body = _escape(result.message)
     fallback = f"{title}: {result.message}"
     blocks: list[dict[str, Any]] = [_header(title), _section(body)]
@@ -65,6 +70,10 @@ def result_message(result: ToolResult) -> dict[str, Any]:
             }
         )
         blocks.extend(_table_sections(table))
+
+    code_block = str(result.data.get("slack_code_block") or "")
+    if code_block:
+        blocks.extend(_table_sections(code_block))
 
     return _payload(fallback, blocks)
 
