@@ -17,6 +17,7 @@ OnboardingMessage = Literal[
 
 _SLACK_USER_ID = re.compile(r"^[UW][A-Z0-9]+$")
 _MAX_BLOCK_TEXT = 2_900
+_MAX_MESSAGE_BLOCKS = 50
 
 
 def result_message(result: ToolResult) -> dict[str, Any]:
@@ -69,11 +70,16 @@ def result_message(result: ToolResult) -> dict[str, Any]:
                 ],
             }
         )
-        blocks.extend(_table_sections(table))
+        _append_sections(blocks, _table_sections(table))
 
     code_block = str(result.data.get("slack_code_block") or "")
     if code_block:
-        blocks.extend(_table_sections(code_block))
+        _append_sections(blocks, _table_sections(code_block))
+    code_blocks = result.data.get("slack_code_blocks", [])
+    if isinstance(code_blocks, list):
+        for item in code_blocks:
+            if isinstance(item, str) and item:
+                _append_sections(blocks, _table_sections(item))
 
     return _payload(fallback, blocks)
 
@@ -181,10 +187,16 @@ def _field(label: str, value: str) -> dict[str, str]:
     return {"type": "mrkdwn", "text": f"*{label}*\n{_escape(value)}"}
 
 
+def _append_sections(blocks: list[dict[str, Any]], sections: list[dict[str, Any]]) -> None:
+    remaining = _MAX_MESSAGE_BLOCKS - len(blocks)
+    if remaining > 0:
+        blocks.extend(sections[:remaining])
+
+
 def _table_sections(table: str) -> list[dict[str, Any]]:
     if not table.startswith("```") or not table.endswith("```"):
         return [_section(_escape(table))]
-    content = table[3:-3].strip("\n")
+    content = _escape_code_content(table[3:-3].strip("\n"))
     lines: list[str] = []
     for line in content.splitlines() or [""]:
         while len(line) > _MAX_BLOCK_TEXT - 8:
@@ -214,6 +226,10 @@ def _mention(user_id: str) -> str:
 
 def _escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_code_content(value: str) -> str:
+    return _escape(value).replace("```", "[code fence]")
 
 
 def _plain(value: str) -> str:

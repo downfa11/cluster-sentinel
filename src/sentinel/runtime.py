@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sentinel.agent.mcp import SentinelMcpGateway
 from sentinel.agent.orchestrator import AgentOrchestrator
@@ -54,7 +55,7 @@ class SentinelRuntime:
             return ToolResult(False, decision.reason, {"error_kind": "denied"})
 
         result = self.agent.handle(request)
-        completion_metadata = result.data
+        completion_metadata = self._audit_metadata(result.data)
         if "database" in result.data or "slack_table" in result.data:
             completion_metadata = {
                 key: result.data[key]
@@ -68,6 +69,22 @@ class SentinelRuntime:
             completion_metadata,
         )
         return result
+
+    @staticmethod
+    def _audit_metadata(data: dict[str, Any]) -> dict[str, Any]:
+        def redact(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    key: redact(item)
+                    for key, item in value.items()
+                    if key not in {"slack_code_block", "slack_code_blocks"}
+                }
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            return value
+
+        redacted = redact(data)
+        return redacted if isinstance(redacted, dict) else {}
 
     def onboarding_status(self, slack_user_id: str, channel_id: str) -> ToolResult:
         request = self._onboarding_request(slack_user_id, channel_id)
@@ -167,7 +184,11 @@ class SentinelRuntime:
 
     def format_result(self, result: ToolResult) -> str:
         status = (
-            "OK" if result.ok else "DENIED" if result.data.get("error_kind") == "denied" else "FAILED"
+            "OK"
+            if result.ok
+            else "DENIED"
+            if result.data.get("error_kind") == "denied"
+            else "FAILED"
         )
         details = ""
         if result.data.get("pull_request_url"):

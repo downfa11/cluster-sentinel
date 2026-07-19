@@ -233,14 +233,23 @@ class AgentOrchestrator:
             f"{schema_context}\n"
         )
 
-    def _summarize_tool_results(self, results: list[ToolResult]) -> ToolResult:
+    @staticmethod
+    def _summarize_tool_results(results: list[ToolResult]) -> ToolResult:
         if len(results) == 1:
             return results[0]
         messages = [result.message for result in results]
+        data: dict[str, Any] = {"results": [result.data for result in results]}
+        code_blocks = [
+            str(result.data["slack_code_block"])
+            for result in results
+            if result.data.get("slack_code_block")
+        ]
+        if code_blocks:
+            data["slack_code_blocks"] = code_blocks
         return ToolResult(
             ok=all(result.ok for result in results),
             message="MCP tools completed:\n" + "\n\n".join(messages),
-            data={"results": [result.data for result in results]},
+            data=data,
         )
 
     def _safe_provider_error(self, exc: Exception, request_id: str) -> str:
