@@ -74,6 +74,11 @@ def result_message(result: ToolResult) -> dict[str, Any]:
     code_block = str(result.data.get("slack_code_block") or "")
     if code_block:
         blocks.extend(_table_sections(code_block))
+    code_blocks = result.data.get("slack_code_blocks", [])
+    if isinstance(code_blocks, list):
+        for item in code_blocks:
+            if isinstance(item, str) and item:
+                blocks.extend(_table_sections(item))
 
     return _payload(fallback, blocks)
 
@@ -184,7 +189,7 @@ def _field(label: str, value: str) -> dict[str, str]:
 def _table_sections(table: str) -> list[dict[str, Any]]:
     if not table.startswith("```") or not table.endswith("```"):
         return [_section(_escape(table))]
-    content = table[3:-3].strip("\n")
+    content = _escape_code_content(table[3:-3].strip("\n"))
     lines: list[str] = []
     for line in content.splitlines() or [""]:
         while len(line) > _MAX_BLOCK_TEXT - 8:
@@ -214,6 +219,10 @@ def _mention(user_id: str) -> str:
 
 def _escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_code_content(value: str) -> str:
+    return _escape(value).replace("```", "[code fence]")
 
 
 def _plain(value: str) -> str:

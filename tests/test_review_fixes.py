@@ -275,7 +275,8 @@ class _FakeArgo(ArgoCdClient):
             )
         )
 
-    def _get_json(self, path: str) -> dict[str, Any]:
+    def _get_json(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        del params
         if path == "/api/v1/applications":
             return {
                 "items": [

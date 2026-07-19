@@ -109,15 +109,19 @@ class ArgoCdClient:
             raise RuntimeError(f"pod is not managed by {app_name}: {requested_pod}")
         pod = next((item for item in candidates if item["status"] != "Running"), candidates[0])
         requested_container = str(args.get("container") or "").strip()
+        containers = self._pod_containers(app_name, pod)
+        if requested_container and containers and requested_container not in containers:
+            raise RuntimeError(f"container is not part of {pod['name']}: {requested_container}")
+        container = requested_container or (containers[0] if containers else "")
         tail_lines = min(max(int(args.get("tail_lines") or 100), 1), 500)
         path = f"/api/v1/applications/{quote(app_name, safe='')}/pods/{quote(pod['name'], safe='')}/logs"
         params = {"namespace": pod["namespace"], "tailLines": str(tail_lines)}
-        if requested_container:
-            params["container"] = requested_container
+        if container:
+            params["container"] = container
         logs = self._get_text(path, params)
         if len(logs) > 12000:
             logs = logs[-12000:]
-        container_detail = f" container={requested_container}" if requested_container else ""
+        container_detail = f" container={container}" if container else ""
         rendered_logs = logs.rstrip() or "(no log lines)"
         return ToolResult(
             ok=True,
@@ -129,7 +133,7 @@ class ArgoCdClient:
                 "application": app_name,
                 "namespace": pod["namespace"],
                 "pod": pod["name"],
-                "container": requested_container or None,
+                "container": container or None,
                 "tail_lines": tail_lines,
                 "slack_code_block": f"```\n{rendered_logs}\n```",
             },
@@ -165,16 +169,20 @@ class ArgoCdClient:
         return sorted(applications, key=lambda item: item["name"])
 
     def _pods(self, app_name: str) -> list[dict[str, Any]]:
-        payload = self._get_json(
-            f"/api/v1/applications/{quote(app_name, safe='')}/resource-tree"
-        )
+        payload = self._get_json(f"/api/v1/applications/{quote(app_name, safe='')}/resource-tree")
         items = payload.get("nodes", payload.get("items", []))
+        is_resource_tree = "nodes" in payload
         pods: list[dict[str, Any]] = []
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("kind") or "")
-            if kind and kind != "Pod":
+            if is_resource_tree:
+                group = str(item.get("group") or "")
+                uid = str(item.get("uid") or item.get("metadata", {}).get("uid") or "")
+                if kind != "Pod" or group not in {"", "core"} or not uid:
+                    continue
+            elif kind and kind != "Pod":
                 continue
             name = str(item.get("name") or item.get("metadata", {}).get("name") or "")
             namespace = str(
@@ -182,20 +190,54 @@ class ArgoCdClient:
             )
             if not name or not namespace:
                 continue
-            raw_containers = item.get("containers", [])
-            containers = [
-                str(container.get("name") if isinstance(container, dict) else container)
-                for container in raw_containers
-            ]
             pods.append(
                 {
                     "name": name,
                     "namespace": namespace,
                     "status": self._pod_status(item),
-                    "containers": [name for name in containers if name],
+                    "containers": self._container_names(item.get("containers", [])),
                 }
             )
         return sorted(pods, key=lambda item: (item["namespace"], item["name"]))
+
+    def _pod_containers(self, app_name: str, pod: dict[str, Any]) -> list[str]:
+        known = self._container_names(pod.get("containers", []))
+        if known:
+            return known
+        payload = self._get_json(
+            f"/api/v1/applications/{quote(app_name, safe='')}/resource",
+            {
+                "namespace": str(pod["namespace"]),
+                "resourceName": str(pod["name"]),
+                "version": "v1",
+                "kind": "Pod",
+            },
+        )
+        manifest = payload.get("manifest")
+        if isinstance(manifest, str):
+            try:
+                resource = json.loads(manifest)
+            except json.JSONDecodeError:
+                return []
+        else:
+            resource = manifest
+        if not isinstance(resource, dict):
+            return []
+        spec = resource.get("spec")
+        if not isinstance(spec, dict):
+            return []
+        return self._container_names(spec.get("containers", []))
+
+    @staticmethod
+    def _container_names(raw_containers: Any) -> list[str]:
+        if not isinstance(raw_containers, list):
+            return []
+        names: list[str] = []
+        for container in raw_containers:
+            name = container.get("name") if isinstance(container, dict) else container
+            if name:
+                names.append(str(name))
+        return names
 
     def _pod_status(self, pod: dict[str, Any]) -> str:
         info = pod.get("info", [])
@@ -225,8 +267,8 @@ class ArgoCdClient:
             service=service, environment=environment
         )
 
-    def _get_json(self, path: str) -> dict[str, Any]:
-        response = self._get(path)
+    def _get_json(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        response = self._get(path, params=params)
         payload = response.json()
         return payload if isinstance(payload, dict) else {"items": payload}
 
