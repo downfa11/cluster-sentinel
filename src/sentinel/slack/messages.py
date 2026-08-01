@@ -21,15 +21,18 @@ _MAX_MESSAGE_BLOCKS = 50
 
 
 def result_message(result: ToolResult) -> dict[str, Any]:
-    if result.ok:
-        title = "✅ Sentinel · 완료"
-    elif result.data.get("error_kind") == "denied":
-        title = "⛔ Sentinel · 거부됨"
-    else:
-        title = "⚠️ Sentinel · 실패"
     body = _escape(result.message)
-    fallback = f"{title}: {result.message}"
-    blocks: list[dict[str, Any]] = [_header(title), _section(body)]
+    if result.ok:
+        fallback = result.message
+        blocks: list[dict[str, Any]] = [_section(body)]
+    else:
+        title = (
+            "⛔ Sentinel · 거부됨"
+            if result.data.get("error_kind") == "denied"
+            else "⚠️ Sentinel · 실패"
+        )
+        fallback = f"{title}: {result.message}"
+        blocks = [_header(title), _section(body)]
 
     pull_request_url = str(result.data.get("pull_request_url") or "")
     if pull_request_url:

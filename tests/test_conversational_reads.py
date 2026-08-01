@@ -83,6 +83,73 @@ def test_log_routing_uses_tokens_and_parses_complete_line_counts() -> None:
     assert mcp.calls[2].arguments["tail_lines"] == 500
 
 
+def test_self_reference_and_compound_read_request_are_deterministic() -> None:
+    mcp = _RecordingMcp()
+    settings = _operational_settings(
+        operational_targets={
+            "commerce": {"application": "commerce", "environment": "production"},
+            "cluster-sentinel": {
+                "application": "cluster-sentinel",
+                "environment": "production",
+            },
+        }
+    )
+    orchestrator = AgentOrchestrator(settings, mcp)
+
+    self_status = orchestrator.handle(_request("너 지금 애플리케이션 가동 상태가 어때?"))
+    combined = orchestrator.handle(
+        _request("그럼 cluster-sentinel의 상태와 함께 최근 로그 10줄 보여줘")
+    )
+
+    assert self_status.ok and combined.ok
+    assert [call.name for call in mcp.calls] == [
+        "argocd_get_status",
+        "argocd_get_status",
+        "argocd_get_logs",
+    ]
+    assert all(call.arguments["service"] == "cluster-sentinel" for call in mcp.calls)
+    assert mcp.calls[-1].arguments["tail_lines"] == 10
+    assert "MCP tools completed" not in combined.message
+
+
+def test_restart_word_does_not_take_the_read_status_fast_path() -> None:
+    mcp = _RecordingMcp()
+    orchestrator = AgentOrchestrator(_operational_settings(), mcp)
+
+    calls = orchestrator._deterministic_read_calls(_request("commerce 재가동해줘"))
+
+    assert calls == []
+
+
+def test_self_reference_accepts_punctuation_boundary() -> None:
+    mcp = _RecordingMcp()
+    settings = _operational_settings(
+        operational_targets={
+            "cluster-sentinel": {
+                "application": "cluster-sentinel",
+                "environment": "production",
+            }
+        }
+    )
+    orchestrator = AgentOrchestrator(settings, mcp)
+
+    result = orchestrator.handle(_request("너, 지금 애플리케이션 가동 상태가 어때?"))
+
+    assert result.ok
+    assert mcp.calls[0].name == "argocd_get_status"
+    assert mcp.calls[0].arguments["service"] == "cluster-sentinel"
+
+
+def test_fleet_status_question_routes_to_application_summary() -> None:
+    mcp = _RecordingMcp()
+    orchestrator = AgentOrchestrator(_operational_settings(), mcp)
+
+    result = orchestrator.handle(_request("전체 애플리케이션 가동 상태 요약해줘"))
+
+    assert result.ok
+    assert [call.name for call in mcp.calls] == ["argocd_list_applications"]
+
+
 class _ConversationResponses:
     def __init__(self) -> None:
         self.input: object | None = None
@@ -274,7 +341,7 @@ def test_slack_thread_reloads_prior_turns_for_follow_up() -> None:
     assert runtime.calls[0]["conversation"] == ()
     assert runtime.calls[1]["conversation"] == (
         ("user", "commerce 상태"),
-        ("assistant", "✅ Sentinel · 완료\n응답"),
+        ("assistant", "응답"),
     )
 
 

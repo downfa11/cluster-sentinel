@@ -18,9 +18,21 @@ class ArgoCdClient:
         status = payload.get("status", {})
         sync = status.get("sync", {})
         health = status.get("health", {})
+        sync_status = str(sync.get("status") or "Unknown")
+        health_status = str(health.get("status") or "Unknown")
+        if sync_status == "Synced" and health_status == "Healthy":
+            message = (
+                f"‘{app_name}’ 애플리케이션은 정상 가동 중입니다. "
+                "배포 상태는 Synced, 애플리케이션 상태는 Healthy입니다."
+            )
+        else:
+            message = (
+                f"‘{app_name}’ 애플리케이션은 확인이 필요합니다. "
+                f"배포 상태는 {sync_status}, 애플리케이션 상태는 {health_status}입니다."
+            )
         return ToolResult(
             ok=True,
-            message=f"{app_name}: health={health.get('status', 'unknown')} sync={sync.get('status', 'unknown')}",
+            message=message,
             data={
                 "application": app_name,
                 "health": health.get("status"),
@@ -33,27 +45,39 @@ class ArgoCdClient:
     def list_applications(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
         del request, args
         applications = self._allowed_applications()
-        lines = [
-            f"- {item['name']} — sync={item['sync']} health={item['health']}"
-            for item in applications
+        unhealthy = [
+            item for item in applications if item["sync"] != "Synced" or item["health"] != "Healthy"
         ]
+        healthy_count = len(applications) - len(unhealthy)
+        lines = [
+            f"- {item['name']} — 배포 {item['sync']}, 상태 {item['health']}" for item in unhealthy
+        ]
+        if unhealthy:
+            message = (
+                f"애플리케이션 {len(applications)}개 중 {healthy_count}개는 정상입니다. "
+                f"{len(unhealthy)}개는 확인이 필요합니다:" + "\n" + "\n".join(lines)
+            )
+        else:
+            message = f"허용된 애플리케이션 {len(applications)}개가 모두 정상 가동 중입니다."
         return ToolResult(
             ok=True,
-            message=f"Allowed Argo CD applications: {len(applications)}"
-            + (("\n" + "\n".join(lines)) if lines else ""),
+            message=message,
             data={"applications": applications},
         )
 
     def list_out_of_sync(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
         del request, args
-        applications = [
-            item for item in self._allowed_applications() if item["sync"] == "OutOfSync"
-        ]
-        lines = [f"- {item['name']} — health={item['health']}" for item in applications]
+        applications = [item for item in self._allowed_applications() if item["sync"] != "Synced"]
+        lines = [f"- {item['name']} — 상태 {item['health']}" for item in applications]
+        message = (
+            f"동기화되지 않았거나 확인할 수 없는 애플리케이션이 {len(applications)}개 있습니다."
+            + (("\n" + "\n".join(lines)) if lines else "")
+            if applications
+            else "모든 애플리케이션이 Argo CD와 동기화되어 있습니다."
+        )
         return ToolResult(
             ok=True,
-            message=f"OutOfSync applications: {len(applications)}"
-            + (("\n" + "\n".join(lines)) if lines else ""),
+            message=message,
             data={"applications": applications},
         )
 
@@ -270,8 +294,8 @@ class ArgoCdClient:
         return ToolResult(
             ok=True,
             message=(
-                f"{app_name} {pod['namespace']}/{pod['name']}{container_detail} "
-                f"(last {tail_lines} lines)"
+                f"‘{app_name}’의 최근 로그 {tail_lines}줄입니다. "
+                f"Pod {pod['namespace']}/{pod['name']}{container_detail}"
             ),
             data={
                 "application": app_name,
@@ -294,12 +318,14 @@ class ArgoCdClient:
         payload = self._get_json("/api/v1/applications")
         items = payload.get("items", [])
         applications: list[dict[str, str]] = []
+        observed: set[str] = set()
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("metadata", {}).get("name") or "")
             if name not in allowed:
                 continue
+            observed.add(name)
             status = item.get("status", {})
             sync = status.get("sync", {}) if isinstance(status, dict) else {}
             health = status.get("health", {}) if isinstance(status, dict) else {}
@@ -310,6 +336,9 @@ class ArgoCdClient:
                     "health": str(health.get("status") or "unknown"),
                 }
             )
+        applications.extend(
+            {"name": name, "sync": "Missing", "health": "Unknown"} for name in allowed - observed
+        )
         return sorted(applications, key=lambda item: item["name"])
 
     def _pods(self, app_name: str) -> list[dict[str, Any]]:
@@ -440,7 +469,14 @@ class ArgoCdClient:
             content = result.get("content")
             if isinstance(content, str):
                 chunks.append(content)
-        return "".join(chunks) if found_stream_entry else raw
+        if not found_stream_entry:
+            return raw
+        decoded = ""
+        for chunk in chunks:
+            if decoded and chunk and not decoded.endswith("\n") and not chunk.startswith("\n"):
+                decoded += "\n"
+            decoded += chunk
+        return decoded
 
     def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
         if not self.settings.argocd_base_url or not self.settings.argocd_token:

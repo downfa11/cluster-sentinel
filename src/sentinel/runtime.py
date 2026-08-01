@@ -212,6 +212,10 @@ class SentinelRuntime:
             )
         elif result.data.get("slack_code_block"):
             details = f"\n{result.data['slack_code_block']}"
+        elif isinstance(result.data.get("slack_code_blocks"), list):
+            code_blocks = [str(block) for block in result.data["slack_code_blocks"] if block]
+            if code_blocks:
+                details = "\n" + "\n".join(code_blocks)
         return f"Sentinel {status}: {result.message}{details}"
 
     def _clean_slack_text(self, text: str) -> str:

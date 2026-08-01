@@ -25,7 +25,7 @@ def test_result_message_splits_large_log_code_blocks() -> None:
     logs = "```\n" + "\n".join("x" * 80 for _ in range(80)) + "\n```"
     payload = result_message(ToolResult(True, "recent logs", {"slack_code_block": logs}))
 
-    log_blocks = payload["blocks"][2:]
+    log_blocks = payload["blocks"][1:]
     assert len(log_blocks) > 1
     assert all(len(_block_text(block)) <= 2_900 for block in log_blocks)
     assert all(_block_text(block).startswith("```\n") for block in log_blocks)
@@ -38,7 +38,7 @@ def test_result_message_escapes_untrusted_log_code_content() -> None:
         ToolResult(True, "recent logs", {"slack_code_block": "```\n```\n<!channel>&\n```"})
     )
 
-    rendered = _block_text(payload["blocks"][2])
+    rendered = _block_text(payload["blocks"][1])
     assert rendered.count("```") == 2
     assert "[code fence]" in rendered
     assert "&lt;!channel&gt;&amp;" in rendered
@@ -54,7 +54,21 @@ def test_multiple_tool_results_preserve_log_blocks_for_slack() -> None:
 
     payload = result_message(summary)
     assert summary.data["slack_code_blocks"] == ["```\nready\n```"]
-    assert "ready" in _block_text(payload["blocks"][2])
+    assert "ready" in _block_text(payload["blocks"][1])
+
+
+def test_runtime_format_result_preserves_compound_log_blocks() -> None:
+    summary = AgentOrchestrator._summarize_tool_results(
+        [
+            ToolResult(True, "healthy"),
+            ToolResult(True, "recent logs", {"slack_code_block": "```\nready\n```"}),
+        ]
+    )
+
+    rendered = SentinelRuntime.__new__(SentinelRuntime).format_result(summary)
+
+    assert "healthy" in rendered
+    assert "ready" in rendered
 
 
 def test_result_message_caps_combined_log_blocks_to_slack_message_limit() -> None:

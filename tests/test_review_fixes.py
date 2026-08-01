@@ -271,7 +271,8 @@ class _FakeArgo(ArgoCdClient):
         super().__init__(
             Settings(
                 operational_targets={
-                    "commerce": {"application": "commerce", "environment": "production"}
+                    "commerce": {"application": "commerce", "environment": "production"},
+                    "ghost": {"application": "ghost", "environment": "production"},
                 }
             )
         )
@@ -310,13 +311,20 @@ class _FakeArgo(ArgoCdClient):
 
 def test_argocd_listing_and_logs_are_allowlisted_and_rendered() -> None:
     argo = _FakeArgo()
+    summary = argo.list_applications(_request(), {})
+    assert "2개는 확인이 필요" in summary.message
+    assert "commerce" in summary.message
+    assert "ghost" in summary.message
+    assert "not-allowed" not in summary.message
+    assert "Allowed Argo CD applications" not in summary.message
     listed = argo.list_out_of_sync(_request(), {})
     assert "commerce" in listed.message
+    assert "ghost" in listed.message
     assert "not-allowed" not in listed.message
     logs = argo.get_logs(
         _request(), {"_application": "commerce", "pod": "commerce-api-1", "tail_lines": 50}
     )
-    assert logs.message.endswith("(last 50 lines)")
+    assert "최근 로그 50줄" in logs.message
     assert logs.data["slack_code_block"] == "```\nready\n```"
     with pytest.raises(RuntimeError, match="not managed"):
         argo.get_logs(_request(), {"_application": "commerce", "pod": "other"})

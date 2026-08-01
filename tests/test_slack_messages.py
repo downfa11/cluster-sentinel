@@ -1,7 +1,12 @@
 from typing import Any
 
 from sentinel.models import ToolResult
-from sentinel.slack.messages import alert_message, instruction_message, onboarding_message, result_message
+from sentinel.slack.messages import (
+    alert_message,
+    instruction_message,
+    onboarding_message,
+    result_message,
+)
 
 
 def _block_text(block: dict[str, Any]) -> str:
@@ -18,13 +23,15 @@ def test_result_message_uses_one_block_kit_shape_and_disables_unfurls() -> None:
         )
     )
 
-    assert payload["text"].startswith("✅ Sentinel · 완료")
+    assert (
+        payload["text"] == "draft pull request created\nPR: https://github.com/example/repo/pull/7"
+    )
     assert payload["blocks"][0] == {
-        "type": "header",
-        "text": {"type": "plain_text", "text": "✅ Sentinel · 완료", "emoji": True},
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "draft pull request created"},
     }
-    assert payload["blocks"][2]["type"] == "actions"
-    assert payload["blocks"][2]["elements"][0]["url"].endswith("/pull/7")
+    assert payload["blocks"][1]["type"] == "actions"
+    assert payload["blocks"][1]["elements"][0]["url"].endswith("/pull/7")
     assert payload["mrkdwn"] is False
     assert payload["unfurl_links"] is False
     assert payload["unfurl_media"] is False
@@ -66,7 +73,7 @@ def test_database_table_is_split_into_valid_sized_code_blocks() -> None:
         )
     )
 
-    table_blocks = payload["blocks"][3:]
+    table_blocks = payload["blocks"][2:]
     assert len(table_blocks) > 1
     assert all(block["type"] == "section" for block in table_blocks)
     assert all(len(_block_text(block)) <= 2_900 for block in table_blocks)
