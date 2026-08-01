@@ -13,6 +13,7 @@ class PolicyEngine:
         "argocd_list_out_of_sync",
         "argocd_list_pods",
         "argocd_get_logs",
+        "argocd_get_environment_variables",
         "grafana_alerts",
         "access_get_user",
     }
@@ -28,6 +29,7 @@ class PolicyEngine:
         "github_create_grant_pr",
         "github_create_revoke_pr",
     }
+    PR_CREATOR_ROLES = {Role.GUI_USER, Role.DEV, Role.OPERATOR, Role.ADMIN}
 
     def __init__(self, readonly_channel_ids: set[str] | None = None) -> None:
         self.readonly_channel_ids = readonly_channel_ids or set()
@@ -84,34 +86,28 @@ class PolicyEngine:
             return self._authorize_read_tool(request, tool_name, args, environment)
 
         if tool_name in self.ACCESS_PR_TOOLS:
-            if Role.ADMIN not in roles:
-                return PolicyDecision(False, "access PR tools require admin role", [], {})
+            if not roles.intersection(self.PR_CREATOR_ROLES):
+                return PolicyDecision(
+                    False, "access PR tools require a registered Sentinel user", [], {}
+                )
             return PolicyDecision(
                 True,
-                "admin access PR",
+                "registered user access proposal PR",
                 ["admin", "access-owner"],
                 self._constraints_for(tool_name, args),
             )
 
         if tool_name in self.DEPLOYMENT_PR_TOOLS:
-            if environment == "production" and Role.ADMIN not in roles:
-                return PolicyDecision(False, "production PR tools require admin role", [], {})
-            if Role.ADMIN in roles or Role.OPERATOR in roles:
+            if not roles.intersection(self.PR_CREATOR_ROLES):
                 return PolicyDecision(
-                    True,
-                    "deployment PR allowed",
-                    ["admin"] if environment == "production" else [],
-                    self._constraints_for(tool_name, args),
+                    False, "deployment PR tools require a registered Sentinel user", [], {}
                 )
-            if (
-                tool_name == "github_create_deploy_pr"
-                and Role.DEV in roles
-                and environment in {"dev", "staging"}
-            ):
-                return PolicyDecision(
-                    True, "dev non-production deploy PR", [], self._constraints_for(tool_name, args)
-                )
-            return PolicyDecision(False, "deployment PR tools require operator role", [], {})
+            return PolicyDecision(
+                True,
+                "registered user deployment proposal PR",
+                ["admin"],
+                self._constraints_for(tool_name, args),
+            )
 
         return PolicyDecision(False, f"unknown MCP tool: {tool_name}", [], {})
 

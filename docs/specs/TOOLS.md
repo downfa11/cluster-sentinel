@@ -6,10 +6,10 @@ The LLM may select only these tools. Sentinel resolves applications and environm
 
 - `github_create_deploy_pr(service, environment, image_tag)`: replace the configured image with an immutable sha256 digest.
 - `github_create_restart_pr(service, environment)`: update the configured Deployment Pod-template restart annotation.
-- `github_create_rollback_pr(service, environment, target)`: replace the configured image with an immutable rollback digest.
+- `github_create_rollback_pr(service, environment, target)`: replace the configured image with an immutable rollback digest. The symbolic target `previous` resolves server-side to the most recent distinct digest in up to 100 commits for the allowlisted manifest path.
 - `github_create_onboard_pr`, `github_create_offboard_pr`, `github_create_grant_pr`, `github_create_revoke_pr`: update `access/users.yaml` and the managed role groups in `external/tailscale/policy.hujson`.
 
-Every write creates a signed-off draft PR. Sentinel never merges it.
+Every registered human Sentinel role may create these signed-off draft PRs. The policy records admin review as required, and Sentinel never merges a PR. Unregistered channel users and bot identities remain read-only.
 
 ## Argo CD read tools
 

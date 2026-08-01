@@ -18,6 +18,7 @@ class _ArgoStub:
     list_out_of_sync = get_status
     list_pods = get_status
     get_logs = get_status
+    get_environment_variables = get_status
 
 
 def test_policy_denial_is_marked_for_slack_rendering() -> None:

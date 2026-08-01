@@ -36,6 +36,7 @@ class OperationRequest:
     command: str = "natural_language"
     environment: str | None = None
     service: str | None = None
+    conversation: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

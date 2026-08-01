@@ -22,4 +22,4 @@ Sentinel must not expose tools for shell execution, SSH, kubectl mutation, terra
 
 ## Approval model
 
-The LLM can create PRs, but humans approve and merge. GitHub Actions and Argo CD perform reconciliation after merge.
+Any registered human Sentinel role may propose a bounded draft PR. Unregistered channel users and bot identities cannot create PRs. Production, deployment, and access changes still require the configured admin/CODEOWNERS review and merge; Sentinel never merges. GitHub Actions and Argo CD perform reconciliation only after merge.

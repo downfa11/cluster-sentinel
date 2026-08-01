@@ -100,6 +100,144 @@ class ArgoCdClient:
             data={"application": app_name, "pods": pods},
         )
 
+    def get_environment_variables(
+        self, request: OperationRequest, args: dict[str, Any]
+    ) -> ToolResult:
+        app_name = self._app_name(request, args)
+        payload = self._get_json(
+            f"/api/v1/applications/{quote(app_name, safe='')}/managed-resources"
+        )
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+
+        config_map_keys: dict[tuple[str, str], set[str]] = {}
+        workload_states: list[tuple[str, str, str, dict[str, Any]]] = []
+        workload_kinds = {"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            state = self._managed_resource_state(item)
+            if state is None:
+                continue
+            kind = str(item.get("kind") or state.get("kind") or "")
+            metadata = state.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            namespace = str(item.get("namespace") or metadata.get("namespace") or "")
+            name = str(item.get("name") or metadata.get("name") or "")
+            if kind == "ConfigMap":
+                data = state.get("data", {})
+                if isinstance(data, dict):
+                    config_map_keys[(namespace, name)] = {str(key) for key in data}
+            elif kind in workload_kinds and name:
+                workload_states.append((kind, namespace, name, state))
+
+        workloads: list[dict[str, Any]] = []
+        all_names: set[str] = set()
+        unresolved_secret_refs: set[str] = set()
+        for kind, namespace, name, state in workload_states:
+            pod_spec = self._pod_spec(kind, state)
+            if pod_spec is None:
+                continue
+            containers = [
+                *self._container_specs(pod_spec.get("initContainers", [])),
+                *self._container_specs(pod_spec.get("containers", [])),
+            ]
+            for container in containers:
+                container_name = str(container.get("name") or "unknown")
+                names = {
+                    str(entry.get("name"))
+                    for entry in container.get("env", [])
+                    if isinstance(entry, dict) and entry.get("name")
+                }
+                for source in container.get("envFrom", []):
+                    if not isinstance(source, dict):
+                        continue
+                    prefix = str(source.get("prefix") or "")
+                    config_ref = source.get("configMapRef")
+                    if isinstance(config_ref, dict):
+                        ref_name = str(config_ref.get("name") or "")
+                        names.update(
+                            prefix + key
+                            for key in config_map_keys.get((namespace, ref_name), set())
+                        )
+                    secret_ref = source.get("secretRef")
+                    if isinstance(secret_ref, dict) and secret_ref.get("name"):
+                        unresolved_secret_refs.add(str(secret_ref["name"]))
+                all_names.update(names)
+                workloads.append(
+                    {
+                        "kind": kind,
+                        "namespace": namespace,
+                        "workload": name,
+                        "container": container_name,
+                        "names": sorted(names),
+                    }
+                )
+
+        lines = [
+            (
+                f"- {item['kind']}/{item['workload']} · {item['container']}: "
+                + (", ".join(item["names"]) if item["names"] else "(명시된 변수명 없음)")
+            )
+            for item in workloads
+        ]
+        message = f"{app_name}에서 확인된 환경변수명: {len(all_names)}개"
+        if lines:
+            message += "\n" + "\n".join(lines)
+        if unresolved_secret_refs:
+            message += "\n- Secret envFrom은 보안상 내용과 키를 읽지 않았습니다: " + ", ".join(
+                sorted(unresolved_secret_refs)
+            )
+        return ToolResult(
+            ok=True,
+            message=message,
+            data={
+                "application": app_name,
+                "environment_variable_names": sorted(all_names),
+                "workloads": workloads,
+                "unresolved_secret_refs": sorted(unresolved_secret_refs),
+            },
+        )
+
+    @staticmethod
+    def _managed_resource_state(item: dict[str, Any]) -> dict[str, Any] | None:
+        for key in ("targetState", "liveState"):
+            raw = item.get(key)
+            if isinstance(raw, dict):
+                return raw
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+        return None
+
+    @staticmethod
+    def _pod_spec(kind: str, state: dict[str, Any]) -> dict[str, Any] | None:
+        spec = state.get("spec", {})
+        if not isinstance(spec, dict):
+            return None
+        if kind == "CronJob":
+            job_template = spec.get("jobTemplate", {})
+            if not isinstance(job_template, dict):
+                return None
+            spec = job_template.get("spec", {})
+            if not isinstance(spec, dict):
+                return None
+        template = spec.get("template", {})
+        if not isinstance(template, dict):
+            return None
+        pod_spec = template.get("spec", {})
+        return pod_spec if isinstance(pod_spec, dict) else None
+
+    @staticmethod
+    def _container_specs(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
     def get_logs(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
         app_name = self._app_name(request, args)
         pods = self._pods(app_name)

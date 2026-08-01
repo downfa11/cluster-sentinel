@@ -21,7 +21,6 @@ class SentinelSlackBot:
     ONBOARDING_REACTION = "wave"
     PENDING_REACTION = "hourglass_flowing_sand"
     CREATED_REACTION = "memo"
-
     def __init__(self, settings: Settings) -> None:
         try:
             from slack_bolt import App
@@ -36,6 +35,7 @@ class SentinelSlackBot:
         )
         self._processed_join_events: set[str] = set()
         self._processed_join_order: deque[str] = deque(maxlen=1024)
+        self._thread_history: dict[tuple[str, str], list[tuple[str, str]]] = {}
         self._register_handlers()
 
     def start(self) -> None:
@@ -184,12 +184,15 @@ class SentinelSlackBot:
     ) -> None:
         timestamp = str(event.get("ts", ""))
         thread_ts = str(event.get("thread_ts") or timestamp)
+        history_key = (channel_id, thread_ts)
+        conversation = self._conversation(history_key)
         self._reaction(client, "add", self.LOADING_REACTION, channel_id, timestamp)
         try:
             result = self.runtime.handle_text(
                 text=str(event.get("text", "")),
                 slack_user_id=str(event.get("user", "")),
                 channel_id=channel_id,
+                conversation=conversation,
             )
             say(thread_ts=thread_ts, **result_message(result))
         except Exception:
@@ -197,9 +200,25 @@ class SentinelSlackBot:
             self._reaction(client, "add", self.FAILURE_REACTION, channel_id, timestamp)
             raise
 
+        self._remember_turn(history_key, "user", str(event.get("text", "")))
+        self._remember_turn(history_key, "assistant", result.message)
         self._reaction(client, "remove", self.LOADING_REACTION, channel_id, timestamp)
         final_reaction = self.SUCCESS_REACTION if result.ok else self.FAILURE_REACTION
         self._reaction(client, "add", final_reaction, channel_id, timestamp)
+
+    def _conversation(self, key: tuple[str, str]) -> tuple[tuple[str, str], ...]:
+        histories = getattr(self, "_thread_history", None)
+        if histories is None:
+            histories = {}
+            self._thread_history = histories
+        return tuple(histories.get(key, []))
+
+    def _remember_turn(self, key: tuple[str, str], role: str, text: str) -> None:
+        histories = getattr(self, "_thread_history", None)
+        if histories is None:
+            histories = {}
+            self._thread_history = histories
+        histories.setdefault(key, []).append((role, text))
 
     def _reaction(
         self,

@@ -39,13 +39,20 @@ class SentinelRuntime:
         self.mcp = SentinelMcpGateway(self.tools)
         self.agent = AgentOrchestrator(settings, self.mcp)
 
-    def handle_text(self, text: str, slack_user_id: str, channel_id: str) -> ToolResult:
+    def handle_text(
+        self,
+        text: str,
+        slack_user_id: str,
+        channel_id: str,
+        conversation: tuple[tuple[str, str], ...] = (),
+    ) -> ToolResult:
         principal = self.identity.resolve_slack_user(slack_user_id)
         request = OperationRequest(
             request_id=str(uuid.uuid4()),
             channel_id=channel_id,
             text=self._clean_slack_text(text),
             principal=principal,
+            conversation=conversation,
         )
 
         self.audit.write("request.received", request, "success")
