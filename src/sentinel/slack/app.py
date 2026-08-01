@@ -21,6 +21,9 @@ class SentinelSlackBot:
     ONBOARDING_REACTION = "wave"
     PENDING_REACTION = "hourglass_flowing_sand"
     CREATED_REACTION = "memo"
+    MAX_CONVERSATION_CHARS = 100_000
+    MAX_MESSAGE_CHARS = 12_000
+
     def __init__(self, settings: Settings) -> None:
         try:
             from slack_bolt import App
@@ -35,7 +38,6 @@ class SentinelSlackBot:
         )
         self._processed_join_events: set[str] = set()
         self._processed_join_order: deque[str] = deque(maxlen=1024)
-        self._thread_history: dict[tuple[str, str], list[tuple[str, str]]] = {}
         self._register_handlers()
 
     def start(self) -> None:
@@ -184,10 +186,13 @@ class SentinelSlackBot:
     ) -> None:
         timestamp = str(event.get("ts", ""))
         thread_ts = str(event.get("thread_ts") or timestamp)
-        history_key = (channel_id, thread_ts)
-        conversation = self._conversation(history_key)
         self._reaction(client, "add", self.LOADING_REACTION, channel_id, timestamp)
         try:
+            conversation = (
+                ()
+                if thread_ts == timestamp
+                else self._conversation(client, channel_id, thread_ts, timestamp)
+            )
             result = self.runtime.handle_text(
                 text=str(event.get("text", "")),
                 slack_user_id=str(event.get("user", "")),
@@ -200,25 +205,99 @@ class SentinelSlackBot:
             self._reaction(client, "add", self.FAILURE_REACTION, channel_id, timestamp)
             raise
 
-        self._remember_turn(history_key, "user", str(event.get("text", "")))
-        self._remember_turn(history_key, "assistant", result.message)
         self._reaction(client, "remove", self.LOADING_REACTION, channel_id, timestamp)
         final_reaction = self.SUCCESS_REACTION if result.ok else self.FAILURE_REACTION
         self._reaction(client, "add", final_reaction, channel_id, timestamp)
 
-    def _conversation(self, key: tuple[str, str]) -> tuple[tuple[str, str], ...]:
-        histories = getattr(self, "_thread_history", None)
-        if histories is None:
-            histories = {}
-            self._thread_history = histories
-        return tuple(histories.get(key, []))
+    def _conversation(
+        self,
+        client: Any,
+        channel_id: str,
+        thread_ts: str,
+        current_ts: str,
+    ) -> tuple[tuple[str, str], ...]:
+        messages: list[dict[str, Any]] = []
+        cursor = ""
+        while True:
+            response = client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=200,
+                **({"cursor": cursor} if cursor else {}),
+            )
+            page = response.get("messages", [])
+            if isinstance(page, list):
+                messages.extend(item for item in page if isinstance(item, dict))
+            metadata = response.get("response_metadata", {})
+            cursor = str(metadata.get("next_cursor") or "") if isinstance(metadata, dict) else ""
+            if not cursor:
+                break
 
-    def _remember_turn(self, key: tuple[str, str], role: str, text: str) -> None:
-        histories = getattr(self, "_thread_history", None)
-        if histories is None:
-            histories = {}
-            self._thread_history = histories
-        histories.setdefault(key, []).append((role, text))
+        turns: list[tuple[str, str]] = []
+        for message in messages:
+            if str(message.get("ts") or "") == current_ts:
+                continue
+            text = self._thread_message_text(message)
+            if not text:
+                continue
+            role = (
+                "assistant"
+                if message.get("bot_id") or message.get("subtype") == "bot_message"
+                else "user"
+            )
+            turns.append((role, text[: self.MAX_MESSAGE_CHARS]))
+        return self._bound_conversation(turns)
+
+    @classmethod
+    def _bound_conversation(
+        cls,
+        turns: list[tuple[str, str]],
+    ) -> tuple[tuple[str, str], ...]:
+        selected: list[tuple[str, str]] = []
+        used = 0
+        truncated = False
+        for role, text in reversed(turns):
+            cost = len(text)
+            if selected and used + cost > cls.MAX_CONVERSATION_CHARS:
+                truncated = True
+                break
+            if cost > cls.MAX_CONVERSATION_CHARS:
+                text = text[: cls.MAX_CONVERSATION_CHARS]
+                cost = len(text)
+                truncated = True
+            selected.append((role, text))
+            used += cost
+        selected.reverse()
+        if truncated:
+            selected.insert(
+                0,
+                ("assistant", "[오래된 스레드 내용 일부가 컨텍스트 크기 제한으로 생략됨]"),
+            )
+        return tuple(selected)
+
+    @staticmethod
+    def _thread_message_text(message: dict[str, Any]) -> str:
+        blocks = message.get("blocks")
+        values: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                text = value.get("text")
+                if isinstance(text, str) and text.strip():
+                    values.append(text.strip())
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        if isinstance(blocks, list) and blocks:
+            collect(blocks)
+        else:
+            text = message.get("text")
+            if isinstance(text, str) and text.strip():
+                values.append(text.strip())
+        return "\n".join(dict.fromkeys(values))
 
     def _reaction(
         self,

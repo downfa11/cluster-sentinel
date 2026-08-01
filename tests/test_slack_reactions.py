@@ -25,6 +25,9 @@ class _Client:
         self.fail_reactions = fail_reactions
         self.calls: list[tuple[str, str, str, str]] = []
 
+    def conversations_replies(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"messages": [], "response_metadata": {"next_cursor": ""}}
+
     def reactions_add(self, *, name: str, channel: str, timestamp: str) -> None:
         if self.fail_reactions:
             raise RuntimeError("missing scope")

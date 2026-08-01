@@ -263,7 +263,9 @@ class ToolRegistry:
         }:
             service = str(args.get("service") or "")
             try:
-                current_digest, previous_digest = self.github.previous_image_digests(service)
+                current_digest, previous_digest, base_sha = self.github.previous_image_digests(
+                    service
+                )
             except PreviousDigestNotFoundError:
                 return ToolResult(
                     False,
@@ -274,6 +276,7 @@ class ToolRegistry:
                     {"error_kind": "not_found", "service": service},
                 )
             args["target"] = previous_digest
+            args["_base_sha"] = base_sha
 
         result = self.github.create_pr(request, self.factory.rollback(request, args))
         if current_digest is None:

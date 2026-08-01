@@ -181,13 +181,18 @@ class ArgoCdClient:
             )
             for item in workloads
         ]
-        message = f"{app_name}에서 확인된 환경변수명: {len(all_names)}개"
-        if lines:
-            message += "\n" + "\n".join(lines)
+        details = list(lines)
         if unresolved_secret_refs:
-            message += "\n- Secret envFrom은 보안상 내용과 키를 읽지 않았습니다: " + ", ".join(
-                sorted(unresolved_secret_refs)
+            details.append(
+                "- Secret envFrom은 보안상 내용과 키를 읽지 않았습니다: "
+                + ", ".join(sorted(unresolved_secret_refs))
             )
+        message = (
+            f"{app_name}에서 확인된 환경변수명: {len(all_names)}개 "
+            f"(workload/container {len(workloads)}개)"
+        )
+        fence = chr(96) * 3
+        slack_code_block = f"{fence}\n" + "\n".join(details) + f"\n{fence}" if details else ""
         return ToolResult(
             ok=True,
             message=message,
@@ -196,6 +201,7 @@ class ArgoCdClient:
                 "environment_variable_names": sorted(all_names),
                 "workloads": workloads,
                 "unresolved_secret_refs": sorted(unresolved_secret_refs),
+                "slack_code_block": slack_code_block,
             },
         )
 

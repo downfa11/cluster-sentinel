@@ -630,12 +630,14 @@ class SchemaWithoutQueryResponses(SequencedDatabaseResponses):
                     '{"database":"commerce","reason":"find order columns"}',
                 )
             ]
+            output_text = ""
         else:
             output = []
-        return type("Response", (), {"output": output})()
+            output_text = "어떤 기간의 주문을 조회할지 알려주세요."
+        return type("Response", (), {"output": output, "output_text": output_text})()
 
 
-def test_orchestrator_fails_when_schema_is_not_followed_by_query() -> None:
+def test_orchestrator_returns_clarification_when_schema_is_not_followed_by_query() -> None:
     mcp = FakeDatabaseMcp()
     orchestrator = AgentOrchestrator(Settings(openai_api_key="synthetic-key"), mcp)
     responses = SchemaWithoutQueryResponses()
@@ -643,6 +645,7 @@ def test_orchestrator_fails_when_schema_is_not_followed_by_query() -> None:
 
     result = orchestrator.handle(request_for(Role.ADMIN))
 
-    assert not result.ok
-    assert "did not produce" in result.message
+    assert result.ok
+    assert result.message == "어떤 기간의 주문을 조회할지 알려주세요."
+    assert result.data["response_kind"] == "conversation"
     assert mcp.calls == ["db_get_schema"]

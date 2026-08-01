@@ -68,6 +68,21 @@ def test_common_reads_do_not_depend_on_llm_availability() -> None:
     assert mcp.calls[1].arguments["tail_lines"] == 100
 
 
+def test_log_routing_uses_tokens_and_parses_complete_line_counts() -> None:
+    mcp = _RecordingMcp()
+    orchestrator = AgentOrchestrator(_operational_settings(), mcp)
+
+    orchestrator.handle(_request("commerce catalog status"))
+    orchestrator.handle(_request("commerce logs 300 lines"))
+    orchestrator.handle(_request("commerce 로그 1000줄"))
+
+    assert mcp.calls[0].name == "argocd_get_status"
+    assert mcp.calls[1].name == "argocd_get_logs"
+    assert mcp.calls[1].arguments["tail_lines"] == 300
+    assert mcp.calls[2].name == "argocd_get_logs"
+    assert mcp.calls[2].arguments["tail_lines"] == 500
+
+
 class _ConversationResponses:
     def __init__(self) -> None:
         self.input: object | None = None
@@ -191,6 +206,9 @@ def test_environment_variable_tool_returns_names_without_values_or_secret_conten
     rendered = json.dumps({"message": result.message, "data": result.data}, ensure_ascii=False)
     assert "must-not-leak" not in rendered
     assert "api-token" not in rendered
+    assert "\n- " not in result.message
+    assert result.data["slack_code_block"].startswith(chr(96) * 3)
+    assert "Deployment/commerce-api" in result.data["slack_code_block"]
 
 
 class _SlackRuntime:
@@ -203,49 +221,137 @@ class _SlackRuntime:
 
 
 class _SlackClient:
+    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
+        self.messages = messages or []
+        self.reply_calls: list[dict[str, Any]] = []
+
     def reactions_add(self, **_kwargs: str) -> None:
         return None
 
     def reactions_remove(self, **_kwargs: str) -> None:
         return None
 
+    def conversations_replies(self, **kwargs: Any) -> dict[str, Any]:
+        self.reply_calls.append(kwargs)
+        return {"messages": self.messages, "response_metadata": {"next_cursor": ""}}
 
-def test_slack_thread_passes_prior_turns_to_follow_up() -> None:
+
+def _slack_bot(runtime: _SlackRuntime | None = None) -> SentinelSlackBot:
     bot = SentinelSlackBot.__new__(SentinelSlackBot)
+    if runtime is not None:
+        bot.runtime = runtime  # type: ignore[assignment]
+    return bot
+
+
+def test_slack_thread_reloads_prior_turns_for_follow_up() -> None:
     runtime = _SlackRuntime()
-    bot.runtime = runtime  # type: ignore[assignment]
+    bot = _slack_bot(runtime)
+    client = _SlackClient(
+        [
+            {"ts": "100.1", "text": "commerce 상태", "user": "U1"},
+        ]
+    )
     replies: list[dict[str, Any]] = []
 
     bot._handle_event(
         {"ts": "100.1", "text": "commerce 상태", "user": "U1"},
         "C1",
         lambda **payload: replies.append(payload),
-        _SlackClient(),
+        client,
     )
+    client.messages = [
+        {"ts": "100.1", "text": "commerce 상태", "user": "U1"},
+        {"ts": "100.15", "bot_id": "B1", "blocks": replies[0]["blocks"]},
+        {"ts": "100.2", "thread_ts": "100.1", "text": "로그도", "user": "U1"},
+    ]
     bot._handle_event(
         {"ts": "100.2", "thread_ts": "100.1", "text": "로그도", "user": "U1"},
         "C1",
         lambda **payload: replies.append(payload),
-        _SlackClient(),
+        client,
     )
 
     assert runtime.calls[0]["conversation"] == ()
     assert runtime.calls[1]["conversation"] == (
         ("user", "commerce 상태"),
-        ("assistant", "응답"),
+        ("assistant", "✅ Sentinel · 완료\n응답"),
     )
 
 
-def test_slack_thread_keeps_every_turn_without_an_eight_turn_limit() -> None:
-    bot = SentinelSlackBot.__new__(SentinelSlackBot)
-    key = ("C1", "thread-1")
+def test_slack_thread_context_survives_a_new_bot_instance() -> None:
+    client = _SlackClient(
+        [
+            {"ts": "100.1", "text": "commerce 상태", "user": "U1"},
+            {"ts": "100.2", "bot_id": "B1", "text": "commerce는 Healthy입니다."},
+            {"ts": "100.3", "text": "로그도", "user": "U1"},
+        ]
+    )
 
-    for index in range(20):
-        bot._remember_turn(key, "user", f"질문-{index}")
-        bot._remember_turn(key, "assistant", f"응답-{index}")
+    conversation = _slack_bot()._conversation(client, "C1", "100.1", "100.3")
 
-    conversation = bot._conversation(key)
+    assert conversation == (
+        ("user", "commerce 상태"),
+        ("assistant", "commerce는 Healthy입니다."),
+    )
+
+
+def test_slack_thread_includes_rendered_tool_output() -> None:
+    fence = chr(96) * 3
+    client = _SlackClient(
+        [
+            {"ts": "100.1", "text": "최근 로그", "user": "U1"},
+            {
+                "ts": "100.2",
+                "bot_id": "B1",
+                "text": "로그 3줄",
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": "완료"}},
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"{fence}\nline 1\nline 2\nline 3\n{fence}",
+                        },
+                    },
+                ],
+            },
+            {"ts": "100.3", "text": "3번째 줄 설명해줘", "user": "U1"},
+        ]
+    )
+
+    conversation = _slack_bot()._conversation(client, "C1", "100.1", "100.3")
+
+    assert "line 3" in conversation[1][1]
+
+
+def test_slack_thread_keeps_more_than_eight_turns_when_within_size_bound() -> None:
+    messages = [
+        {
+            "ts": f"100.{index}",
+            "text": f"질문-{index}" if index % 2 == 0 else f"응답-{index}",
+            **({} if index % 2 == 0 else {"bot_id": "B1"}),
+        }
+        for index in range(40)
+    ]
+
+    conversation = _slack_bot()._conversation(
+        _SlackClient(messages),
+        "C1",
+        "100.0",
+        "not-present",
+    )
+
     assert len(conversation) == 40
     assert conversation[0] == ("user", "질문-0")
-    assert conversation[-1] == ("assistant", "응답-19")
-    assert bot._conversation(("C1", "another-thread")) == ()
+    assert conversation[-1] == ("assistant", "응답-39")
+
+
+def test_slack_thread_context_is_bounded_by_character_count() -> None:
+    turns = [("user", "x" * 20_000) for _ in range(10)]
+
+    conversation = SentinelSlackBot._bound_conversation(turns)
+
+    assert conversation[0][1].startswith("[오래된 스레드 내용")
+    assert sum(len(text) for _, text in conversation) <= (
+        SentinelSlackBot.MAX_CONVERSATION_CHARS + len(conversation[0][1])
+    )

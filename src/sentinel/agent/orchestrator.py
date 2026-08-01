@@ -89,7 +89,7 @@ class AgentOrchestrator:
                     schema_result = result
 
             selected.extend(tool_calls)
-            if not tool_calls and not selected and assistant_text:
+            if not tool_calls and assistant_text:
                 return ToolResult(
                     True,
                     assistant_text,
@@ -135,11 +135,15 @@ class AgentOrchestrator:
                 "argocd_get_environment_variables",
                 {"service": service},
             )
-        if service and ("로그" in text or "log" in text):
-            line_match = re.search(r"(\d{1,3})\s*줄", text)
+        log_intent = "로그" in text or re.search(r"(?<![a-z0-9_])logs?(?![a-z0-9_])", text)
+        if service and log_intent:
+            line_match = re.search(r"(?<!\d)(\d+)\s*줄", text) or re.search(
+                r"\b(\d+)\s*lines?\b",
+                text,
+            )
             arguments: dict[str, Any] = {"service": service}
             if line_match:
-                arguments["tail_lines"] = min(int(line_match.group(1)), 500)
+                arguments["tail_lines"] = max(1, min(int(line_match.group(1)), 500))
             return _SelectedTool("argocd_get_logs", arguments)
         if service and any(word in text for word in ("상태", "health", "sync", "status")):
             return _SelectedTool("argocd_get_status", {"service": service})
