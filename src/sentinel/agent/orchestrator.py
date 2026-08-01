@@ -321,7 +321,7 @@ class AgentOrchestrator:
             if not choices:
                 return [], ""
             message = getattr(choices[0], "message", None)
-            calls = getattr(message, "tool_calls", []) if message is not None else []
+            calls = (getattr(message, "tool_calls", None) or []) if message is not None else []
             selected = [
                 _SelectedTool(
                     name=str(getattr(getattr(call, "function", None), "name", "")),
