@@ -24,7 +24,7 @@ sentinel-slack-notify = "sentinel.slack.notify:main"
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0.0",
-  "ruff>=0.5.0",
+  "ruff==0.15.20",
   "mypy>=1.10.0",
   "types-PyYAML>=6.0.0",
   "types-PyMySQL>=1.1.0",
