@@ -313,7 +313,7 @@ def test_slack_thread_reloads_prior_turns_for_follow_up() -> None:
     assert runtime.calls[0]["conversation"] == ()
     assert runtime.calls[1]["conversation"] == (
         ("user", "commerce 상태"),
-        ("assistant", "✅ Sentinel · 완료\n응답"),
+        ("assistant", "응답"),
     )
 
 

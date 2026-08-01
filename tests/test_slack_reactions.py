@@ -62,7 +62,7 @@ def test_event_reaction_moves_from_loading_to_final(
     )
     assert replies[0]["text"].endswith(result.message)
     assert replies[0]["thread_ts"] == "123.45"
-    assert replies[0]["blocks"][0]["type"] == "header"
+    assert replies[0]["blocks"][0]["type"] == ("section" if result.ok else "header")
     assert client.calls == [
         ("add", "hourglass_flowing_sand", "C1", "123.45"),
         ("remove", "hourglass_flowing_sand", "C1", "123.45"),
@@ -96,7 +96,7 @@ def test_reaction_api_failure_does_not_block_reply() -> None:
         lambda **payload: replies.append(payload),
         _Client(fail_reactions=True),
     )
-    assert replies[0]["text"] == "✅ Sentinel · 완료: done"
+    assert replies[0]["text"] == "done"
 
 
 def test_unexpected_failure_replaces_loading_with_x() -> None:

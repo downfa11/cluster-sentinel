@@ -65,10 +65,11 @@ class AgentOrchestrator:
                 results.append(result)
             return self._summarize_tool_results(results)
 
-        direct_call = self._deterministic_previous_rollback_call(request)
-        if direct_call is not None:
+        rollback_call = self._deterministic_previous_rollback_call(request)
+        if rollback_call is not None:
             return self.mcp.call_tool(
-                request, McpToolCall(direct_call.name, parse_tool_arguments(direct_call.arguments))
+                request,
+                McpToolCall(rollback_call.name, parse_tool_arguments(rollback_call.arguments)),
             )
         if not self.client:
             return ToolResult(

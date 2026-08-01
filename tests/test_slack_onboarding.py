@@ -164,7 +164,7 @@ def test_slash_handler_acknowledges_and_calls_runtime() -> None:
     assert acknowledgements == [True]
     assert runtime.onboarding_calls == [("U-NEW", "C-ONBOARD", "tailscale@example.com")]
     assert responses[0]["response_type"] == "ephemeral"
-    assert responses[0]["text"] == "✅ Sentinel · 완료: created"
-    assert responses[0]["blocks"][0]["text"]["text"] == "✅ Sentinel · 완료"
+    assert responses[0]["text"] == "created"
+    assert responses[0]["blocks"][0]["text"]["text"] == "created"
     assert responses[0]["unfurl_links"] is False
     assert responses[0]["unfurl_media"] is False
