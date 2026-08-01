@@ -112,6 +112,34 @@ def test_self_reference_and_compound_read_request_are_deterministic() -> None:
     assert "MCP tools completed" not in combined.message
 
 
+def test_restart_word_does_not_take_the_read_status_fast_path() -> None:
+    mcp = _RecordingMcp()
+    orchestrator = AgentOrchestrator(_operational_settings(), mcp)
+
+    calls = orchestrator._deterministic_read_calls(_request("commerce 재가동해줘"))
+
+    assert calls == []
+
+
+def test_self_reference_accepts_punctuation_boundary() -> None:
+    mcp = _RecordingMcp()
+    settings = _operational_settings(
+        operational_targets={
+            "cluster-sentinel": {
+                "application": "cluster-sentinel",
+                "environment": "production",
+            }
+        }
+    )
+    orchestrator = AgentOrchestrator(settings, mcp)
+
+    result = orchestrator.handle(_request("너, 지금 애플리케이션 가동 상태가 어때?"))
+
+    assert result.ok
+    assert mcp.calls[0].name == "argocd_get_status"
+    assert mcp.calls[0].arguments["service"] == "cluster-sentinel"
+
+
 def test_fleet_status_question_routes_to_application_summary() -> None:
     mcp = _RecordingMcp()
     orchestrator = AgentOrchestrator(_operational_settings(), mcp)

@@ -153,7 +153,9 @@ class AgentOrchestrator:
             )
 
         calls: list[_SelectedTool] = []
-        status_intent = any(word in text for word in ("상태", "가동", "health", "sync", "status"))
+        status_intent = any(word in text for word in ("상태", "health", "sync", "status")) or (
+            "가동" in text and "재가동" not in text
+        )
         log_intent = bool("로그" in text or re.search(r"(?<![a-z0-9_])logs?(?![a-z0-9_])", text))
         if service and (
             ("환경변수" in text or "환경 변수" in text or "env" in text)
@@ -191,7 +193,7 @@ class AgentOrchestrator:
             return True
         return bool(
             re.search(
-                r"(?:^|\s)(?:너|너는|너의|네|네가|니|니가|봇|봇의)(?:\s|$)",
+                r"(?<!\w)(?:너|너는|너의|네|네가|니|니가|봇|봇의)(?!\w)",
                 text,
             )
         )

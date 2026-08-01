@@ -67,12 +67,10 @@ class ArgoCdClient:
 
     def list_out_of_sync(self, request: OperationRequest, args: dict[str, Any]) -> ToolResult:
         del request, args
-        applications = [
-            item for item in self._allowed_applications() if item["sync"] == "OutOfSync"
-        ]
+        applications = [item for item in self._allowed_applications() if item["sync"] != "Synced"]
         lines = [f"- {item['name']} — 상태 {item['health']}" for item in applications]
         message = (
-            f"동기화되지 않은 애플리케이션이 {len(applications)}개 있습니다."
+            f"동기화되지 않았거나 확인할 수 없는 애플리케이션이 {len(applications)}개 있습니다."
             + (("\n" + "\n".join(lines)) if lines else "")
             if applications
             else "모든 애플리케이션이 Argo CD와 동기화되어 있습니다."
@@ -320,12 +318,14 @@ class ArgoCdClient:
         payload = self._get_json("/api/v1/applications")
         items = payload.get("items", [])
         applications: list[dict[str, str]] = []
+        observed: set[str] = set()
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("metadata", {}).get("name") or "")
             if name not in allowed:
                 continue
+            observed.add(name)
             status = item.get("status", {})
             sync = status.get("sync", {}) if isinstance(status, dict) else {}
             health = status.get("health", {}) if isinstance(status, dict) else {}
@@ -336,6 +336,9 @@ class ArgoCdClient:
                     "health": str(health.get("status") or "unknown"),
                 }
             )
+        applications.extend(
+            {"name": name, "sync": "Missing", "health": "Unknown"} for name in allowed - observed
+        )
         return sorted(applications, key=lambda item: item["name"])
 
     def _pods(self, app_name: str) -> list[dict[str, Any]]:

@@ -57,6 +57,20 @@ def test_multiple_tool_results_preserve_log_blocks_for_slack() -> None:
     assert "ready" in _block_text(payload["blocks"][1])
 
 
+def test_runtime_format_result_preserves_compound_log_blocks() -> None:
+    summary = AgentOrchestrator._summarize_tool_results(
+        [
+            ToolResult(True, "healthy"),
+            ToolResult(True, "recent logs", {"slack_code_block": "```\nready\n```"}),
+        ]
+    )
+
+    rendered = SentinelRuntime.__new__(SentinelRuntime).format_result(summary)
+
+    assert "healthy" in rendered
+    assert "ready" in rendered
+
+
 def test_result_message_caps_combined_log_blocks_to_slack_message_limit() -> None:
     large_log = "```\n" + "\n".join("x" * 80 for _ in range(160)) + "\n```"
     payload = result_message(
