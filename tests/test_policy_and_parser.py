@@ -384,6 +384,29 @@ class _FakeGeminiClient:
         self.chat = type("Chat", (), {"completions": self.completions})()
 
 
+class _FakeGeminiConversationCompletions:
+    def create(self, **_kwargs: object) -> object:
+        message = type(
+            "Message",
+            (),
+            {
+                "tool_calls": None,
+                "content": "I can continue this conversation naturally.",
+            },
+        )()
+        choice = type("Choice", (), {"message": message})()
+        return type("Response", (), {"choices": [choice]})()
+
+
+class _FakeGeminiConversationClient:
+    def __init__(self) -> None:
+        self.chat = type(
+            "Chat",
+            (),
+            {"completions": _FakeGeminiConversationCompletions()},
+        )()
+
+
 class _RecordingMcp:
     def __init__(self) -> None:
         self.call: object | None = None
@@ -414,6 +437,19 @@ def test_orchestrator_uses_gemini_chat_tool_calling() -> None:
     assert isinstance(tools, list)
     assert tools[0]["function"]["name"] == "argocd_get_status"
     assert getattr(mcp.call, "name") == "argocd_get_status"
+
+
+def test_gemini_plain_text_without_tool_calls_is_a_conversation() -> None:
+    mcp = _RecordingMcp()
+    orchestrator = AgentOrchestrator(Settings(gemini_api_key="test"), mcp)
+    orchestrator.client = _FakeGeminiConversationClient()
+
+    result = orchestrator.handle(make_request({Role.ADMIN}))
+
+    assert result.ok
+    assert result.message == "I can continue this conversation naturally."
+    assert result.data["response_kind"] == "conversation"
+    assert mcp.call is None
 
 
 def test_slack_dms_are_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
