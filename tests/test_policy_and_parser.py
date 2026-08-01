@@ -41,14 +41,58 @@ def target_settings(**overrides: object) -> Settings:
     return Settings(**values)
 
 
-def test_policy_denies_dev_production_deploy_tool() -> None:
+def test_policy_allows_dev_to_propose_production_deploy_pr() -> None:
     decision = PolicyEngine().authorize_tool_call(
         make_request({Role.DEV}),
         "github_create_deploy_pr",
         {"service": "commerce-api", "environment": "production"},
     )
-    assert not decision.allowed
-    assert "production" in decision.reason
+    assert decision.allowed
+    assert decision.required_approvals == ["admin"]
+
+
+@pytest.mark.parametrize("role", [Role.GUI_USER, Role.DEV, Role.OPERATOR, Role.ADMIN])
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "github_create_deploy_pr",
+        "github_create_restart_pr",
+        "github_create_rollback_pr",
+    ],
+)
+def test_registered_users_can_propose_deployment_prs(role: Role, tool_name: str) -> None:
+    decision = PolicyEngine().authorize_tool_call(
+        make_request({role}),
+        tool_name,
+        {"service": "commerce-api", "environment": "production"},
+    )
+    assert decision.allowed
+    assert decision.required_approvals == ["admin"]
+
+
+def test_registered_user_can_propose_access_pr_but_admin_review_is_required() -> None:
+    decision = PolicyEngine().authorize_tool_call(
+        make_request({Role.GUI_USER}),
+        "github_create_grant_pr",
+        {"user": "alice@example.com", "role": "dev"},
+    )
+    assert decision.allowed
+    assert decision.required_approvals == ["admin", "access-owner"]
+
+
+def test_bot_role_cannot_propose_human_prs() -> None:
+    policy = PolicyEngine()
+    request = make_request({Role.BOT})
+    assert not policy.authorize_tool_call(
+        request,
+        "github_create_restart_pr",
+        {"service": "commerce-api", "environment": "production"},
+    ).allowed
+    assert not policy.authorize_tool_call(
+        request,
+        "github_create_grant_pr",
+        {"user": "alice@example.com", "role": "dev"},
+    ).allowed
 
 
 def test_policy_allows_operator_non_prod_restart_tool() -> None:

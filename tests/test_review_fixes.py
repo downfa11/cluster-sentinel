@@ -113,6 +113,7 @@ class _CapturingArgo:
     diff = get_status
     list_pods = get_status
     get_logs = get_status
+    get_environment_variables = get_status
     list_applications = get_status
     list_out_of_sync = get_status
 

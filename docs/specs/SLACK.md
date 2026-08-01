@@ -1,6 +1,6 @@
 # Slack Specification
 
-Sentinel receives Socket Mode `app_mention` and `member_joined_channel` events. The Slack app uses `app_mentions:read`, `channels:read`, `groups:read`, `chat:write`, `commands`, and `reactions:write`; it does not require Slack email scopes.
+Sentinel receives Socket Mode `app_mention` and `member_joined_channel` events. The Slack app uses `app_mentions:read`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `chat:write`, `commands`, and `reactions:write`; it does not require Slack email scopes. Sentinel reloads replies from Slack for every request so thread context survives Pod restarts; rendered messages are included within bounded per-message and total context limits.
 
 DM handling is disabled by default. Set `SENTINEL_SLACK_ALLOW_DMS=true` only when DM access is intentional. Private control and alert channels must explicitly invite the bot.
 

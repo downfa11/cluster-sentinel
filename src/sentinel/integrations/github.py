@@ -21,6 +21,10 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ACCESS_ROLES = {"gui-user", "dev", "operator", "admin"}
 
 
+class PreviousDigestNotFoundError(RuntimeError):
+    """The allowlisted manifest has no earlier distinct image digest."""
+
+
 @dataclass(frozen=True)
 class FileMutation:
     path: str
@@ -34,6 +38,7 @@ class PullRequestDraft:
     body: str
     mutations: list[FileMutation]
     idempotency_key: str | None = None
+    base_sha: str | None = None
 
 
 class GitHubClient:
@@ -82,7 +87,11 @@ class GitHubClient:
                 )
             base_ref = client.get(f"{base_url}/git/ref/heads/{self.settings.github_default_branch}")
             base_ref.raise_for_status()
-            sha = base_ref.json()["object"]["sha"]
+            sha = str(base_ref.json()["object"]["sha"])
+            if draft.base_sha and sha != draft.base_sha:
+                raise RuntimeError(
+                    "default branch advanced after rollback history resolution; retry the request"
+                )
             branch = f"{branch_prefix}-{secrets.token_hex(4)}"
             created = client.post(
                 f"{base_url}/git/refs",
@@ -96,6 +105,16 @@ class GitHubClient:
                 )
                 for mutation in draft.mutations:
                     self._mutate_file(client, base_url, branch, mutation, commit_message)
+
+                if draft.base_sha:
+                    latest_ref = client.get(
+                        f"{base_url}/git/ref/heads/{self.settings.github_default_branch}"
+                    )
+                    latest_ref.raise_for_status()
+                    if str(latest_ref.json()["object"]["sha"]) != draft.base_sha:
+                        raise RuntimeError(
+                            "default branch advanced while creating rollback PR; retry the request"
+                        )
 
                 pr = client.post(
                     f"{base_url}/pulls",
@@ -163,6 +182,98 @@ class GitHubClient:
             response.raise_for_status()
             encoded = str(response.json().get("content", "")).replace("\n", "")
         return base64.b64decode(encoded).decode("utf-8")
+
+    def previous_image_digests(self, service: str) -> tuple[str, str, str]:
+        target = self.settings.gitops_targets.get(service)
+        if not target:
+            raise RuntimeError(f"unsupported GitOps service: {service}")
+        raw_path = str(target.get("path") or "").strip()
+        if not raw_path:
+            raise RuntimeError(f"GitOps target has no path: {service}")
+        path = PurePosixPath(raw_path)
+        if path.is_absolute() or ".." in path.parts:
+            raise RuntimeError(f"unsafe GitOps target path: {path}")
+        repository = str(target.get("repository") or "")
+        if not repository:
+            raise RuntimeError(f"GitOps target has no repository: {service}")
+        if not self.settings.github_token:
+            raise RuntimeError("SENTINEL_GITHUB_TOKEN is required for deployment history")
+
+        owner, repo = self.settings.gitops_repo.split("/", 1)
+        encoded_path = str(path)
+        base_url = f"https://api.github.com/repos/{owner}/{repo}"
+        with self._http_client() as client:
+            base_ref = client.get(f"{base_url}/git/ref/heads/{self.settings.github_default_branch}")
+            base_ref.raise_for_status()
+            base_sha = str(base_ref.json()["object"]["sha"])
+            current_content = self._read_file_at_ref(
+                client,
+                base_url,
+                encoded_path,
+                base_sha,
+            )
+            if current_content is None:
+                raise RuntimeError(f"GitOps manifest does not exist: {encoded_path}")
+            current_digest = self._manifest_image_digest(current_content, repository)
+
+            response = client.get(
+                f"{base_url}/commits",
+                params={
+                    "path": encoded_path,
+                    "sha": base_sha,
+                    "per_page": 100,
+                },
+            )
+            response.raise_for_status()
+            commits = response.json()
+            for commit in commits if isinstance(commits, list) else []:
+                if not isinstance(commit, dict) or not commit.get("sha"):
+                    continue
+                content = self._read_file_at_ref(
+                    client,
+                    base_url,
+                    encoded_path,
+                    str(commit["sha"]),
+                )
+                if content is None:
+                    continue
+                try:
+                    digest = self._manifest_image_digest(content, repository)
+                except RuntimeError:
+                    continue
+                if digest != current_digest:
+                    return current_digest, digest, base_sha
+
+        raise PreviousDigestNotFoundError(
+            f"no previous distinct digest found for {service} in the latest 100 file commits"
+        )
+
+    @staticmethod
+    def _read_file_at_ref(
+        client: Any,
+        base_url: str,
+        path: str,
+        ref: str,
+    ) -> str | None:
+        response = client.get(f"{base_url}/contents/{path}", params={"ref": ref})
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("GitHub contents response is invalid")
+        encoded = str(payload.get("content") or "").replace("\n", "")
+        return base64.b64decode(encoded).decode("utf-8")
+
+    @staticmethod
+    def _manifest_image_digest(content: str, repository: str) -> str:
+        pattern = re.compile(rf"{re.escape(repository)}@(?P<digest>sha256:[0-9a-f]{{64}})")
+        matches = pattern.findall(content)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected exactly one digest-pinned image for {repository}, found {len(matches)}"
+            )
+        return str(matches[0])
 
     def _http_client(self) -> Any:
         try:
@@ -247,6 +358,7 @@ class GitOpsPullRequestFactory:
             action="rollback",
             title=f"revert: roll back {service} image",
             body=self._body(request, "rollback", service, environment),
+            base_sha=str(args.get("_base_sha") or "") or None,
             mutations=[
                 FileMutation(
                     target["path"], lambda current: self._render_image(current, target, image)

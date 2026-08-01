@@ -6,7 +6,11 @@ from typing import Any, Callable
 from sentinel.audit import AuditLogger
 from sentinel.database import DEFAULT_QUERY_ROWS, MAX_QUERY_ROWS, DatabaseService
 from sentinel.integrations.argocd import ArgoCdClient
-from sentinel.integrations.github import GitHubClient, GitOpsPullRequestFactory
+from sentinel.integrations.github import (
+    GitHubClient,
+    GitOpsPullRequestFactory,
+    PreviousDigestNotFoundError,
+)
 from sentinel.integrations.grafana import GrafanaClient
 from sentinel.models import OperationRequest, ToolResult
 from sentinel.policy import PolicyEngine
@@ -22,6 +26,7 @@ class ToolRegistry:
         "argocd_list_out_of_sync": set(),
         "argocd_list_pods": {"service"},
         "argocd_get_logs": {"service"},
+        "argocd_get_environment_variables": {"service"},
         "grafana_alerts": {"service"},
         "github_create_deploy_pr": {"service", "environment", "image_tag"},
         "github_create_restart_pr": {"service", "environment"},
@@ -73,6 +78,7 @@ class ToolRegistry:
             "argocd_list_out_of_sync": self.argocd.list_out_of_sync,
             "argocd_list_pods": self.argocd.list_pods,
             "argocd_get_logs": self.argocd.get_logs,
+            "argocd_get_environment_variables": self.argocd.get_environment_variables,
             "grafana_alerts": self.grafana.alerts,
             "access_get_user": self._access_get_user,
         }
@@ -113,6 +119,14 @@ class ToolRegistry:
                 required={"service"},
             ),
             self._schema(
+                "argocd_get_environment_variables",
+                (
+                    "List environment variable names configured on workloads in one allowlisted "
+                    "Argo CD application. Never returns values and never reads Secret contents."
+                ),
+                required={"service"},
+            ),
+            self._schema(
                 "grafana_alerts", "Read active Grafana alerts for a service.", required={"service"}
             ),
             self._schema(
@@ -134,7 +148,10 @@ class ToolRegistry:
             ),
             self._schema(
                 "github_create_rollback_pr",
-                "Create a draft GitOps rollback PR for an allowlisted digest-pinned workload.",
+                (
+                    "Create a draft GitOps rollback PR for an allowlisted digest-pinned workload. "
+                    "For requests meaning immediately previous or 바로 이전, set target to previous."
+                ),
                 target=True,
                 required={"service", "environment", "target"},
             ),
@@ -204,7 +221,14 @@ class ToolRegistry:
                 "error",
                 {"tool": tool_name, "error": self._safe_error(exc)},
             )
-            return ToolResult(False, f"MCP tool failed: {self._safe_error(exc)}")
+            return ToolResult(
+                False,
+                (
+                    "요청을 처리하는 중 연동 서비스 오류가 발생했습니다. "
+                    f"잠시 후 다시 시도해 주세요. request_id={request.request_id}"
+                ),
+                {"error_kind": "upstream", "tool": tool_name},
+            )
         self.audit.write(
             "mcp.tool.completed", request, "success" if result.ok else "error", {"tool": tool_name}
         )
@@ -226,7 +250,50 @@ class ToolRegistry:
         self, request: OperationRequest, args: dict[str, Any]
     ) -> ToolResult:
         args = {**args, "action": "rollback"}
-        return self.github.create_pr(request, self.factory.rollback(request, args))
+        requested = str(args.get("target") or "").strip().lower()
+        current_digest: str | None = None
+        if requested in {
+            "previous",
+            "immediately-previous",
+            "last",
+            "바로 이전",
+            "바로이전",
+            "직전",
+            "이전",
+        }:
+            service = str(args.get("service") or "")
+            try:
+                current_digest, previous_digest, base_sha = self.github.previous_image_digests(
+                    service
+                )
+            except PreviousDigestNotFoundError:
+                return ToolResult(
+                    False,
+                    (
+                        f"{service}의 현재 digest와 다른 이전 digest를 최근 100개 파일 "
+                        "커밋에서 찾지 못해 롤백 PR을 만들지 않았습니다."
+                    ),
+                    {"error_kind": "not_found", "service": service},
+                )
+            args["target"] = previous_digest
+            args["_base_sha"] = base_sha
+
+        result = self.github.create_pr(request, self.factory.rollback(request, args))
+        if current_digest is None:
+            return result
+        return ToolResult(
+            result.ok,
+            (
+                f"{result.message}\n현재 {current_digest}에서 "
+                f"직전 {args['target']}로 롤백하도록 선택했습니다."
+            ),
+            {
+                **result.data,
+                "current_digest": current_digest,
+                "rollback_digest": args["target"],
+                "rollback_source": "previous_git_history",
+            },
+        )
 
     def _github_create_access_pr(
         self, request: OperationRequest, args: dict[str, Any], action: str
@@ -307,7 +374,10 @@ class ToolRegistry:
         if target:
             properties["target"] = {
                 "type": "string",
-                "description": "Immutable rollback sha256 digest, optionally prefixed by the configured repository.",
+                "description": (
+                    "Immutable rollback sha256 digest, optionally prefixed by the configured "
+                    "repository; use previous for the immediately preceding distinct digest."
+                ),
             }
         if user:
             properties["user"] = {"type": "string"}
@@ -389,6 +459,7 @@ class ToolRegistry:
             "argocd_diff",
             "argocd_list_pods",
             "argocd_get_logs",
+            "argocd_get_environment_variables",
             "grafana_alerts",
         }:
             return resolved
