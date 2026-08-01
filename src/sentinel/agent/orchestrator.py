@@ -49,9 +49,23 @@ class AgentOrchestrator:
         return OpenAI(api_key=api_key)
 
     def handle(self, request: OperationRequest) -> ToolResult:
-        direct_call = self._deterministic_read_call(
-            request
-        ) or self._deterministic_previous_rollback_call(request)
+        direct_calls = self._deterministic_read_calls(request)
+        if direct_calls:
+            results: list[ToolResult] = []
+            for direct_call in direct_calls:
+                result = self.mcp.call_tool(
+                    request,
+                    McpToolCall(
+                        direct_call.name,
+                        parse_tool_arguments(direct_call.arguments),
+                    ),
+                )
+                if not result.ok:
+                    return result
+                results.append(result)
+            return self._summarize_tool_results(results)
+
+        direct_call = self._deterministic_previous_rollback_call(request)
         if direct_call is not None:
             return self.mcp.call_tool(
                 request, McpToolCall(direct_call.name, parse_tool_arguments(direct_call.arguments))
@@ -113,7 +127,7 @@ class AgentOrchestrator:
             "요청을 처리할 운영 대상을 찾지 못했습니다. 서비스명과 원하는 작업을 함께 알려주세요.",
         )
 
-    def _deterministic_read_call(self, request: OperationRequest) -> _SelectedTool | None:
+    def _deterministic_read_calls(self, request: OperationRequest) -> list[_SelectedTool]:
         text = request.text.lower()
         service = next(
             (
@@ -127,15 +141,31 @@ class AgentOrchestrator:
             ),
             None,
         )
+        if service is None and self._refers_to_sentinel(text):
+            service = next(
+                (
+                    name
+                    for name in self.settings.operational_targets
+                    if name.lower() == "cluster-sentinel"
+                ),
+                None,
+            )
+
+        calls: list[_SelectedTool] = []
+        status_intent = any(word in text for word in ("상태", "가동", "health", "sync", "status"))
+        log_intent = bool("로그" in text or re.search(r"(?<![a-z0-9_])logs?(?![a-z0-9_])", text))
         if service and (
             ("환경변수" in text or "환경 변수" in text or "env" in text)
             and any(word in text for word in ("목록", "이름", "변수명", "조회", "보여"))
         ):
-            return _SelectedTool(
-                "argocd_get_environment_variables",
-                {"service": service},
+            calls.append(
+                _SelectedTool(
+                    "argocd_get_environment_variables",
+                    {"service": service},
+                )
             )
-        log_intent = "로그" in text or re.search(r"(?<![a-z0-9_])logs?(?![a-z0-9_])", text)
+        if service and status_intent:
+            calls.append(_SelectedTool("argocd_get_status", {"service": service}))
         if service and log_intent:
             line_match = re.search(r"(?<!\d)(\d+)\s*줄", text) or re.search(
                 r"\b(\d+)\s*lines?\b",
@@ -144,16 +174,26 @@ class AgentOrchestrator:
             arguments: dict[str, Any] = {"service": service}
             if line_match:
                 arguments["tail_lines"] = max(1, min(int(line_match.group(1)), 500))
-            return _SelectedTool("argocd_get_logs", arguments)
-        if service and any(word in text for word in ("상태", "health", "sync", "status")):
-            return _SelectedTool("argocd_get_status", {"service": service})
+            calls.append(_SelectedTool("argocd_get_logs", arguments))
+        if calls:
+            return calls
         if any(word in text for word in ("outofsync", "out of sync", "동기화 안", "동기화되지")):
-            return _SelectedTool("argocd_list_out_of_sync", {})
-        if ("전체" in text or "모든" in text) and any(
-            word in text for word in ("앱", "애플리케이션", "application")
-        ):
-            return _SelectedTool("argocd_list_applications", {})
-        return None
+            return [_SelectedTool("argocd_list_out_of_sync", {})]
+        application_intent = any(word in text for word in ("앱", "애플리케이션", "application"))
+        if application_intent and ("전체" in text or "모든" in text or status_intent):
+            return [_SelectedTool("argocd_list_applications", {})]
+        return []
+
+    @staticmethod
+    def _refers_to_sentinel(text: str) -> bool:
+        if "sentinel" in text or "센티널" in text:
+            return True
+        return bool(
+            re.search(
+                r"(?:^|\s)(?:너|너는|너의|네|네가|니|니가|봇|봇의)(?:\s|$)",
+                text,
+            )
+        )
 
     def _deterministic_previous_rollback_call(
         self, request: OperationRequest
@@ -394,7 +434,7 @@ class AgentOrchestrator:
             data["slack_code_blocks"] = code_blocks
         return ToolResult(
             ok=all(result.ok for result in results),
-            message="MCP tools completed:\n" + "\n\n".join(messages),
+            message="\n\n".join(messages),
             data=data,
         )
 
